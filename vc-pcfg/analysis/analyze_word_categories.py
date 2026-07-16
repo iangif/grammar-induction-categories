@@ -36,7 +36,7 @@ Example
 
     python -m analysis.analyze_word_categories \
         --input analysis/outputs/s91-e5.csv \
-        --output-dir analysis/outputs/category_analysis \
+        --output-dir analysis/outputs/category_analysis/s91-e5 \
         --spacy-model en_core_web_sm
 """
 
