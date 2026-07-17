@@ -497,6 +497,89 @@ def build_word_category_distribution(df: pd.DataFrame) -> pd.DataFrame:
         ]
     ].sort_values(["c", "p_word_given_category", "w"], ascending=[True, False, True])
 
+def build_word_category_ambiguity(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Number of categories observed for each word.
+    """
+
+    ambiguity = (
+        df.groupby("word")["viterbi_preterminal"]
+        .nunique()
+        .rename("num_categories")
+        .reset_index()
+    )
+
+    token_counts = (
+        df.groupby("word")
+        .size()
+        .rename("token_count")
+        .reset_index()
+    )
+
+    ambiguity = ambiguity.merge(
+        token_counts,
+        on="word",
+        how="left",
+    )
+
+    return ambiguity.sort_values(
+        ["num_categories", "token_count", "word"],
+        ascending=[False, False, True],
+    )
+
+
+def build_pos_ambiguity_summary(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Average number of categories per word, grouped by dominant spaCy POS.
+    (Returns POS -> mean number of categories.)
+    """
+
+    ambiguity = (
+        df.groupby("word")["viterbi_preterminal"]
+        .nunique()
+        .rename("num_categories")
+        .reset_index()
+    )
+
+    dominant_pos = (
+        df.groupby(["word", "spacy_pos"])
+        .size()
+        .rename("count")
+        .reset_index()
+        .sort_values(
+            ["word", "count"],
+            ascending=[True, False],
+            kind="stable",
+        )
+        .drop_duplicates("word")
+        [["word", "spacy_pos"]]
+    )
+
+    ambiguity = ambiguity.merge(
+        dominant_pos,
+        on="word",
+        how="left",
+    )
+
+    return (
+        ambiguity.groupby("spacy_pos")["num_categories"]
+        .agg(
+            word_count="count",
+            mean_categories="mean",
+            median_categories="median",
+            std_categories="std",
+            max_categories="max",
+        )
+        .reset_index()
+        .sort_values(
+            "mean_categories",
+            ascending=False,
+        )
+    )
 
 def build_category_summary(
     df: pd.DataFrame,
@@ -1280,6 +1363,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("Computing word/category distributions and rankings ...", flush=True)
     word_category = build_word_category_distribution(df)
     write_csv(word_category, output_dir / "word_category_distribution.csv")
+
+    word_ambiguity = build_word_category_ambiguity(df)
+    write_csv(
+        word_ambiguity,
+        output_dir / "word_ambiguity.csv",
+    )
+
+    pos_ambiguity = build_pos_ambiguity_summary(df)
+    write_csv(
+        pos_ambiguity,
+        output_dir / "pos" / "pos_ambiguity_summary.csv",
+    )
 
     word_scores = add_weighted_log_odds(
         word_category,
