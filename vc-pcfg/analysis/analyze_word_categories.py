@@ -158,8 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--llm-input-max-rows",
         type=int,
-        default=100,
-        help="Maximum rows in each LLM-ready [word, sentence] table.",
+        default=0,
+        help=(
+            "Maximum token rows in each category's LLM-input table. "
+            "Use 0 to include all rows."
+        ),
     )
     parser.add_argument(
         "--top-k-overlap",
@@ -911,16 +914,25 @@ def build_representative_examples(
     return combine_example_reasons(pd.concat(selected, ignore_index=True))
 
 
-def build_llm_input(examples: pd.DataFrame, max_rows: int) -> pd.DataFrame:
-    if examples.empty:
-        return pd.DataFrame(columns=["word", "sentence"])
-    result = (
-        examples[["w", "sentence"]]
-        .rename(columns={"w": "word"})
-        .drop_duplicates(["word", "sentence"])
-    )
+def build_llm_input(
+    df: pd.DataFrame,
+    category: int,
+    max_rows: int,
+) -> pd.DataFrame:
+    """Build an LLM-input table from tokens assigned to one category.
+
+    A max_rows value of 0 or less means that all category rows are kept.
+    """
+    result = df.loc[
+        df["viterbi_preterminal"].eq(category),
+        ["word", "sentence"],
+    ].copy()
+
+    result = result.drop_duplicates(["word", "sentence"])
+
     if max_rows > 0:
         result = result.head(max_rows)
+
     return result.reset_index(drop=True)
 
 
@@ -1216,7 +1228,7 @@ def write_per_category_outputs(
         )
         write_csv(examples, category_dir / "representative_sentences.csv")
 
-        llm_input = build_llm_input(examples, args.llm_input_max_rows)
+        llm_input = build_llm_input(df=df, category=category, max_rows=args.llm_input_max_rows)
         write_csv(llm_input, category_dir / "llm_input.csv")
         if not llm_input.empty:
             combined = llm_input.copy()
