@@ -9,12 +9,20 @@ This script creates:
 * immediate-context distributions
 * representative examples
 * LLM-ready [word, sentence] tables
-* a spaCy POS-tagged category-by-word matrix
-* category-overlap matrices and heatmaps
+* a raw category-by-word matrix and a context-sensitive word/POS matrix
+* POS-delimited category-by-word heatmaps
+* category-overlap matrices in original, average-similarity, and
+  hierarchical-clustering orderings
 
 POS tagging is performed in sentence context while preserving the exact exported
-word boundaries: one spaCy ``Doc`` is created from the token sequence for each ``sent_id``.
-The dominant observed spaCy POS of each word type is used only to order columns in the category-by-word matrix.
+word boundaries: one spaCy ``Doc`` is created from the token sequence for each
+``sent_id``. Two lexical representations are retained:
+
+* raw surface words, such as ``play``;
+* context-sensitive word/POS units, such as ``play.VERB`` and ``play.NOUN``.
+
+The raw-word heatmap is ordered by each surface word's dominant observed POS.
+The word/POS heatmap preserves the POS assigned to each token in context.
 
 Weighted log odds
 -----------------
@@ -29,7 +37,7 @@ Example
     source .venv-analysis/bin/activate
 
     # install dependencies if necessary
-    uv pip install numpy pandas matplotlib spacy click
+    uv pip install numpy pandas matplotlib spacy click scipy
     uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
     cd vc-pcfg
@@ -58,7 +66,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import spacy
+from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.spatial.distance import squareform
 from spacy.tokens import Doc
+
 
 REQUIRED_COLUMNS = [
     "sent_id",
@@ -85,25 +96,26 @@ OUTPUT_EXAMPLE_COLUMNS = [
 ]
 
 POS_ORDER = [
-    "ADJ",
-    "ADP",
-    "ADV",
-    "AUX",
-    "CCONJ",
     "DET",
-    "INTJ",
-    "NOUN",
-    "NUM",
-    "PART",
     "PRON",
     "PROPN",
-    "PUNCT",
-    "SCONJ",
-    "SYM",
+    "NOUN",
+    "ADJ",
+    "NUM",
+    "AUX",
     "VERB",
+    "ADV",
+    "ADP",
+    "PART",
+    "CCONJ",
+    "SCONJ",
+    "INTJ",
+    "PUNCT",
+    "SYM",
     "X",
     "SPACE",
 ]
+
 
 # ---------------------------------------------------------------------------
 # CLI and I/O
@@ -174,7 +186,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--matrix-heatmap-words",
         type=int,
         default=100,
-        help="Most frequent words shown in the readable category-by-word heatmap. The CSV contains all words.",
+        help=(
+            "Most frequent raw words or word/POS units shown in each readable "
+            "category-by-lexical-unit heatmap. The CSV matrices contain all columns."
+        ),
+    )
+    parser.add_argument(
+        "--cluster-linkage",
+        choices=["average", "complete", "single", "weighted"],
+        default="average",
+        help="Linkage method used for hierarchical ordering of overlap heatmaps.",
     )
     parser.add_argument("--random-seed", type=int, default=42)
     parser.add_argument(
@@ -258,6 +279,7 @@ def prepare_input(df: pd.DataFrame, bos: str = "<BOS>", eos: str = "<EOS>") -> p
     result.loc[result["sent_len"] <= 1, "normalized_sentence_position"] = 0.0
 
     return result
+
 
 def write_csv(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -415,6 +437,9 @@ def add_spacy_pos(
 
     result["spacy_pos"] = pos_values
     result["spacy_tag"] = tag_values
+    result["word_pos"] = (
+        result["word"].astype(str) + "." + result["spacy_pos"].astype(str)
+    )
     return result
 
 
@@ -440,6 +465,24 @@ def build_word_pos_summary(df: pd.DataFrame) -> pd.DataFrame:
     return dominant[
         ["word", "dominant_pos", "dominant_pos_count", "total_count", "dominant_pos_share"]
     ]
+
+
+def build_word_pos_unit_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Summarize context-sensitive surface-word/POS lexical units."""
+    summary = (
+        df.groupby(["word_pos", "word", "spacy_pos"], observed=True)
+        .agg(token_count=("word_pos", "size"), sentence_count=("sent_id", "nunique"))
+        .reset_index()
+        .rename(columns={"spacy_pos": "pos"})
+    )
+    pos_rank = {pos: index for index, pos in enumerate(POS_ORDER)}
+    summary["_pos_rank"] = summary["pos"].map(pos_rank).fillna(len(POS_ORDER))
+    summary = summary.sort_values(
+        ["_pos_rank", "pos", "token_count", "word", "word_pos"],
+        ascending=[True, True, False, True, True],
+        kind="stable",
+    )
+    return summary.drop(columns="_pos_rank").reset_index(drop=True)
 
 
 def build_category_pos_distribution(
@@ -583,6 +626,49 @@ def build_pos_ambiguity_summary(
             ascending=False,
         )
     )
+
+def build_word_pos_category_distribution(df: pd.DataFrame) -> pd.DataFrame:
+    """Build P(word.POS | category) and P(category | word.POS)."""
+    distribution = (
+        df.groupby(
+            ["viterbi_preterminal", "word_pos", "word", "spacy_pos"],
+            observed=True,
+        )
+        .agg(count=("word_pos", "size"), n_sentences=("sent_id", "nunique"))
+        .reset_index()
+        .rename(
+            columns={
+                "viterbi_preterminal": "c",
+                "word_pos": "word_pos",
+                "word": "w",
+                "spacy_pos": "pos",
+            }
+        )
+    )
+    category_totals = df.groupby("viterbi_preterminal").size()
+    unit_totals = df.groupby("word_pos").size()
+    distribution["p_word_pos_given_category"] = (
+        distribution["count"] / distribution["c"].map(category_totals)
+    )
+    distribution["p_category_given_word_pos"] = (
+        distribution["count"] / distribution["word_pos"].map(unit_totals)
+    )
+    return distribution[
+        [
+            "c",
+            "word_pos",
+            "w",
+            "pos",
+            "count",
+            "p_word_pos_given_category",
+            "p_category_given_word_pos",
+            "n_sentences",
+        ]
+    ].sort_values(
+        ["c", "p_word_pos_given_category", "word_pos"],
+        ascending=[True, False, True],
+    )
+
 
 def build_category_summary(
     df: pd.DataFrame,
@@ -950,12 +1036,34 @@ def build_category_word_matrix(
     ordering = word_pos_summary.copy()
     ordering["_pos_rank"] = ordering["dominant_pos"].map(pos_rank).fillna(len(POS_ORDER))
     ordering = ordering.sort_values(
-        ["_pos_rank", "dominant_pos", "word"], kind="stable"
+        ["_pos_rank", "dominant_pos", "total_count", "word"],
+        ascending=[True, True, False, True],
+        kind="stable",
     )
     ordered_words = ordering["word"].tolist()
 
     matrix = word_category.pivot(index="c", columns="w", values="p_word_given_category")
     matrix = matrix.reindex(index=category_ids, columns=ordered_words, fill_value=0.0).fillna(0.0)
+    matrix.index.name = "c"
+    return matrix
+
+
+def build_category_word_pos_matrix(
+    word_pos_category: pd.DataFrame,
+    word_pos_unit_summary: pd.DataFrame,
+    category_ids: Sequence[int],
+) -> pd.DataFrame:
+    ordered_units = word_pos_unit_summary["word_pos"].tolist()
+    matrix = word_pos_category.pivot(
+        index="c",
+        columns="word_pos",
+        values="p_word_pos_given_category",
+    )
+    matrix = matrix.reindex(
+        index=category_ids,
+        columns=ordered_units,
+        fill_value=0.0,
+    ).fillna(0.0)
     matrix.index.name = "c"
     return matrix
 
@@ -1027,6 +1135,157 @@ def labeled_matrix(values: np.ndarray, category_ids: Sequence[int]) -> pd.DataFr
     return pd.DataFrame(values, index=category_ids, columns=category_ids).rename_axis(
         index="c", columns="other_c"
     )
+
+
+def off_diagonal_mean(values: np.ndarray) -> np.ndarray:
+    """Mean finite off-diagonal value for every matrix row."""
+    result = np.full(values.shape[0], np.nan, dtype=float)
+    for index in range(values.shape[0]):
+        row = values[index].copy()
+        row[index] = np.nan
+        finite = row[np.isfinite(row)]
+        if finite.size:
+            result[index] = float(finite.mean())
+    return result
+
+
+def nearest_other(
+    values: np.ndarray,
+    category_ids: Sequence[int],
+    higher_is_closer: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    nearest_ids = np.full(values.shape[0], np.nan, dtype=float)
+    nearest_values = np.full(values.shape[0], np.nan, dtype=float)
+    category_array = np.asarray(category_ids)
+    for index in range(values.shape[0]):
+        row = values[index].copy()
+        row[index] = np.nan
+        finite_indices = np.flatnonzero(np.isfinite(row))
+        if finite_indices.size == 0:
+            continue
+        local = row[finite_indices]
+        chosen = finite_indices[np.argmax(local) if higher_is_closer else np.argmin(local)]
+        nearest_ids[index] = float(category_array[chosen])
+        nearest_values[index] = float(row[chosen])
+    return nearest_ids, nearest_values
+
+
+def average_metric_order(
+    values: np.ndarray,
+    category_ids: Sequence[int],
+    higher_is_more_redundant: bool,
+) -> tuple[list[int], pd.DataFrame]:
+    means = off_diagonal_mean(values)
+    order_table = pd.DataFrame(
+        {
+            "c": list(category_ids),
+            "mean_off_diagonal_metric": means,
+        }
+    )
+    order_table["has_finite_metric"] = np.isfinite(order_table["mean_off_diagonal_metric"])
+    order_table = order_table.sort_values(
+        ["has_finite_metric", "mean_off_diagonal_metric", "c"],
+        ascending=[False, not higher_is_more_redundant, True],
+        kind="stable",
+    ).reset_index(drop=True)
+    order_table["order_rank"] = np.arange(1, len(order_table) + 1)
+    return order_table["c"].astype(int).tolist(), order_table
+
+
+def hierarchical_metric_order(
+    values: np.ndarray,
+    category_ids: Sequence[int],
+    metric_kind: str,
+    linkage_method: str,
+) -> tuple[list[int], pd.DataFrame]:
+    """Order non-empty categories by hierarchical clustering.
+
+    Categories whose rows contain no finite off-diagonal values are appended in
+    numeric order. J-S divergence is converted to Jensen-Shannon distance with
+    ``sqrt(JSD)`` before clustering.
+    """
+    category_array = np.asarray(category_ids, dtype=int)
+    valid_indices: list[int] = []
+    invalid_indices: list[int] = []
+    for index in range(values.shape[0]):
+        row = values[index].copy()
+        row[index] = np.nan
+        if np.isfinite(row).any():
+            valid_indices.append(index)
+        else:
+            invalid_indices.append(index)
+
+    if len(valid_indices) <= 1:
+        ordered_indices = valid_indices + invalid_indices
+    else:
+        submatrix = values[np.ix_(valid_indices, valid_indices)].astype(float)
+        if metric_kind in {"cosine", "top_k"}:
+            distances = 1.0 - submatrix
+        elif metric_kind == "js":
+            distances = np.sqrt(np.clip(submatrix, 0.0, None))
+        else:
+            raise ValueError(f"Unknown metric kind: {metric_kind}")
+
+        distances = np.nan_to_num(distances, nan=1.0, posinf=1.0, neginf=0.0)
+        distances = np.clip(0.5 * (distances + distances.T), 0.0, None)
+        np.fill_diagonal(distances, 0.0)
+        condensed = squareform(distances, checks=False)
+        tree = linkage(condensed, method=linkage_method, optimal_ordering=True)
+        leaf_positions = leaves_list(tree).tolist()
+        clustered = [valid_indices[position] for position in leaf_positions]
+        ordered_indices = clustered + invalid_indices
+
+    ordered_categories = category_array[ordered_indices].astype(int).tolist()
+    order_table = pd.DataFrame(
+        {
+            "c": ordered_categories,
+            "order_rank": np.arange(1, len(ordered_categories) + 1),
+            "clustered": [index in valid_indices for index in ordered_indices],
+        }
+    )
+    return ordered_categories, order_table
+
+
+def reorder_square_matrix(matrix: pd.DataFrame, order: Sequence[int]) -> pd.DataFrame:
+    return matrix.reindex(index=order, columns=order)
+
+
+def build_redundancy_summary(
+    category_ids: Sequence[int],
+    token_counts: pd.Series,
+    cosine: np.ndarray,
+    js: np.ndarray,
+    top_k: np.ndarray,
+) -> pd.DataFrame:
+    cosine_nearest, cosine_nearest_value = nearest_other(
+        cosine, category_ids, higher_is_closer=True
+    )
+    js_nearest, js_nearest_value = nearest_other(js, category_ids, higher_is_closer=False)
+    top_k_nearest, top_k_nearest_value = nearest_other(
+        top_k, category_ids, higher_is_closer=True
+    )
+    summary = pd.DataFrame(
+        {
+            "c": list(category_ids),
+            "token_count": token_counts.reindex(category_ids, fill_value=0).to_numpy(),
+            "mean_cosine_similarity": off_diagonal_mean(cosine),
+            "max_cosine_similarity": cosine_nearest_value,
+            "nearest_cosine_category": cosine_nearest,
+            "mean_js_divergence": off_diagonal_mean(js),
+            "min_js_divergence": js_nearest_value,
+            "nearest_js_category": js_nearest,
+            "mean_top_k_overlap": off_diagonal_mean(top_k),
+            "max_top_k_overlap": top_k_nearest_value,
+            "nearest_top_k_category": top_k_nearest,
+        }
+    )
+    for column in [
+        "nearest_cosine_category",
+        "nearest_js_category",
+        "nearest_top_k_category",
+    ]:
+        summary[column] = summary[column].astype("Int64")
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -1116,39 +1375,77 @@ def save_square_heatmap(
     plt.close(fig)
 
 
-def save_category_word_heatmap(
+def add_pos_section_guides(ax: plt.Axes, pos_values: Sequence[str]) -> None:
+    """Draw boundaries and labels for contiguous POS sections."""
+    if not pos_values:
+        return
+    starts = [0]
+    for index in range(1, len(pos_values)):
+        if pos_values[index] != pos_values[index - 1]:
+            starts.append(index)
+            ax.axvline(index - 0.5, linewidth=1.0, alpha=0.8)
+    ends = starts[1:] + [len(pos_values)]
+    for start, end in zip(starts, ends, strict=True):
+        midpoint = (start + end - 1) / 2
+        ax.text(
+            midpoint,
+            1.01,
+            pos_values[start],
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            fontweight="bold",
+            clip_on=False,
+        )
+
+
+def save_category_lexical_heatmap(
     matrix: pd.DataFrame,
-    word_totals: pd.Series,
-    word_pos_summary: pd.DataFrame,
-    max_words: int,
+    lexical_summary: pd.DataFrame,
+    label_column: str,
+    pos_column: str,
+    count_column: str,
+    max_columns: int,
     path: Path,
+    title: str,
+    xlabel: str,
+    colorbar_label: str,
 ) -> None:
-    if max_words <= 0 or matrix.empty:
+    if max_columns <= 0 or matrix.empty or lexical_summary.empty:
         return
 
-    selected = word_totals.sort_values(ascending=False).head(max_words).index
-    pos_lookup = word_pos_summary.set_index("word")["dominant_pos"]
     pos_rank = {pos: index for index, pos in enumerate(POS_ORDER)}
-    ordering = pd.DataFrame({"word": selected})
-    ordering["pos"] = ordering["word"].map(pos_lookup).fillna("X")
-    ordering["pos_rank"] = ordering["pos"].map(pos_rank).fillna(len(POS_ORDER))
-    ordering = ordering.sort_values(["pos_rank", "pos", "word"], kind="stable")
-    words = ordering["word"].tolist()
-    subset = matrix.reindex(columns=words)
+    selected = lexical_summary.sort_values(
+        [count_column, label_column],
+        ascending=[False, True],
+        kind="stable",
+    ).head(max_columns)
+    ordering = selected[[label_column, pos_column, count_column]].copy()
+    ordering["_pos_rank"] = ordering[pos_column].map(pos_rank).fillna(len(POS_ORDER))
+    ordering = ordering.sort_values(
+        ["_pos_rank", pos_column, count_column, label_column],
+        ascending=[True, True, False, True],
+        kind="stable",
+    )
+    labels = ordering[label_column].astype(str).tolist()
+    pos_values = ordering[pos_column].fillna("X").astype(str).tolist()
+    subset = matrix.reindex(columns=labels)
 
-    fig_width = max(12, min(30, len(words) * 0.18))
+    fig_width = max(12, min(36, len(labels) * 0.20))
     fig, ax = plt.subplots(figsize=(fig_width, 11))
     image = ax.imshow(subset.to_numpy(), aspect="auto", interpolation="nearest")
     ax.set_yticks(np.arange(len(subset.index)), [str(value) for value in subset.index])
-    ax.set_xticks(np.arange(len(words)), words, rotation=90, fontsize=6)
-    ax.set_xlabel("Word, ordered by dominant spaCy POS")
+    ax.set_xticks(np.arange(len(labels)), labels, rotation=90, fontsize=6)
+    ax.set_xlabel(xlabel)
     ax.set_ylabel("Category")
-    ax.set_title(f"P(word | category), {len(words)} most frequent words")
+    ax.set_title(title, pad=30)
+    add_pos_section_guides(ax, pos_values)
     colorbar = fig.colorbar(image, ax=ax)
-    colorbar.set_label("P(word | category)")
+    colorbar.set_label(colorbar_label)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=180)
+    fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -1168,6 +1465,128 @@ def save_category_pos_heatmap(matrix: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
+
+def write_overlap_analysis(
+    matrix: pd.DataFrame,
+    output_dir: Path,
+    representation_slug: str,
+    representation_title: str,
+    category_ids: Sequence[int],
+    token_counts: pd.Series,
+    top_k_value: int,
+    cluster_linkage: str,
+    skip_plots: bool,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    """Write overlap tables, redundancy summaries, orderings, and heatmaps."""
+    representation_dir = output_dir / "matrices" / representation_slug
+    overlap_dir = representation_dir / "overlap"
+    ordering_dir = representation_dir / "orderings"
+    heatmap_dir = representation_dir / "heatmaps"
+
+    values = matrix.to_numpy(dtype=float)
+    cosine_values = cosine_similarity_matrix(values)
+    js_values = js_divergence_matrix(values)
+    top_k_values = top_k_overlap_matrix(values, top_k_value)
+
+    metrics: dict[str, tuple[pd.DataFrame, bool, str, str, str]] = {
+        "cosine_similarity": (
+            labeled_matrix(cosine_values, category_ids),
+            True,
+            "cosine",
+            "Cosine similarity",
+            "Cosine similarity",
+        ),
+        "js_divergence": (
+            labeled_matrix(js_values, category_ids),
+            False,
+            "js",
+            "Jensen-Shannon divergence",
+            "J-S divergence (bits)",
+        ),
+        f"top_{top_k_value}_overlap": (
+            labeled_matrix(top_k_values, category_ids),
+            True,
+            "top_k",
+            f"Top-{top_k_value} lexical-unit overlap",
+            "Intersection / K",
+        ),
+    }
+
+    output_matrices: dict[str, pd.DataFrame] = {}
+    for metric_slug, (
+        metric_matrix,
+        higher_is_more_redundant,
+        metric_kind,
+        metric_title,
+        colorbar_label,
+    ) in metrics.items():
+        output_matrices[metric_slug] = metric_matrix
+        write_csv(metric_matrix.reset_index(), overlap_dir / f"{metric_slug}.csv")
+
+        average_order, average_table = average_metric_order(
+            metric_matrix.to_numpy(dtype=float),
+            category_ids,
+            higher_is_more_redundant=higher_is_more_redundant,
+        )
+        average_table.insert(1, "representation", representation_slug)
+        average_table.insert(2, "metric", metric_slug)
+        write_csv(
+            average_table,
+            ordering_dir / f"{metric_slug}_average_metric_order.csv",
+        )
+
+        cluster_order, cluster_table = hierarchical_metric_order(
+            metric_matrix.to_numpy(dtype=float),
+            category_ids,
+            metric_kind=metric_kind,
+            linkage_method=cluster_linkage,
+        )
+        cluster_table.insert(1, "representation", representation_slug)
+        cluster_table.insert(2, "metric", metric_slug)
+        cluster_table.insert(3, "linkage", cluster_linkage)
+        write_csv(
+            cluster_table,
+            ordering_dir / f"{metric_slug}_hierarchical_order.csv",
+        )
+
+        if skip_plots:
+            continue
+
+        save_square_heatmap(
+            metric_matrix,
+            heatmap_dir / f"{metric_slug}_original_order.png",
+            f"{representation_title}: {metric_title} (category-number order)",
+            colorbar_label,
+        )
+        save_square_heatmap(
+            reorder_square_matrix(metric_matrix, average_order),
+            heatmap_dir / f"{metric_slug}_average_metric_order.png",
+            (
+                f"{representation_title}: {metric_title} "
+                "(most redundant to most distinctive)"
+            ),
+            colorbar_label,
+        )
+        save_square_heatmap(
+            reorder_square_matrix(metric_matrix, cluster_order),
+            heatmap_dir / f"{metric_slug}_hierarchical_order.png",
+            (
+                f"{representation_title}: {metric_title} "
+                f"(hierarchical order, {cluster_linkage} linkage)"
+            ),
+            colorbar_label,
+        )
+
+    redundancy_summary = build_redundancy_summary(
+        category_ids=category_ids,
+        token_counts=token_counts,
+        cosine=cosine_values,
+        js=js_values,
+        top_k=top_k_values,
+    )
+    write_csv(redundancy_summary, representation_dir / "redundancy_summary.csv")
+    return output_matrices, redundancy_summary
 
 
 # ---------------------------------------------------------------------------
@@ -1291,6 +1710,8 @@ def write_manifest(args: argparse.Namespace, output_dir: Path) -> None:
         "top_contexts": args.top_contexts,
         "position_bins": args.position_bins,
         "top_k_overlap": args.top_k_overlap,
+        "cluster_linkage": args.cluster_linkage,
+        "llm_input_max_rows": args.llm_input_max_rows,
         "random_seed": args.random_seed,
         "metric_definitions": {
             "word_entropy": "Natural-log entropy of P(word | category), measured in nats.",
@@ -1306,6 +1727,19 @@ def write_manifest(args: argparse.Namespace, output_dir: Path) -> None:
             ),
             "word_pos_for_matrix_order": (
                 "Dominant context-sensitive spaCy coarse POS among all occurrences of each word type."
+            ),
+            "word_pos_unit": (
+                "A context-sensitive lexical unit formed as surface_word.spacy_POS, "
+                "for example play.VERB versus play.NOUN."
+            ),
+            "average_metric_order": (
+                "Categories sorted from most redundant to most distinctive by mean "
+                "off-diagonal cosine similarity or top-k overlap; for Jensen-Shannon "
+                "divergence the order is lowest mean divergence to highest."
+            ),
+            "hierarchical_order": (
+                "Average/complete/single/weighted-linkage ordering over 1-cosine, "
+                "1-top-k-overlap, or sqrt(Jensen-Shannon divergence)."
             ),
         },
     }
@@ -1368,13 +1802,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         n_process=args.spacy_processes,
     )
     word_pos_summary = build_word_pos_summary(df)
+    word_pos_unit_summary = build_word_pos_unit_summary(df)
+    write_csv(
+        df[
+            [
+                "sent_id",
+                "word_index",
+                "word",
+                "spacy_pos",
+                "spacy_tag",
+                "word_pos",
+                "viterbi_preterminal",
+                "sentence",
+            ]
+        ],
+        output_dir / "pos" / "token_pos_assignments.csv",
+    )
     write_csv(word_pos_summary, output_dir / "pos" / "word_pos_summary.csv")
+    write_csv(word_pos_unit_summary, output_dir / "pos" / "word_pos_unit_summary.csv")
 
     category_ids = list(range(args.num_categories))
 
     print("Computing word/category distributions and rankings ...", flush=True)
     word_category = build_word_category_distribution(df)
     write_csv(word_category, output_dir / "word_category_distribution.csv")
+
+    word_pos_category = build_word_pos_category_distribution(df)
+    write_csv(
+        word_pos_category,
+        output_dir / "word_pos_category_distribution.csv",
+    )
 
     word_ambiguity = build_word_category_ambiguity(df)
     write_csv(
@@ -1434,7 +1891,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_csv(frames, output_dir / "context" / "context_frame_rankings.csv")
     write_csv(positions, output_dir / "context" / "normalized_position_distribution.csv")
 
-    print("Building spaCy POS and category-by-word matrices ...", flush=True)
+    print("Building spaCy POS and lexical-distribution matrices ...", flush=True)
     category_pos_distribution, category_pos_matrix = build_category_pos_distribution(
         df, category_ids
     )
@@ -1446,49 +1903,106 @@ def main(argv: Sequence[str] | None = None) -> int:
         word_pos_summary,
         category_ids,
     )
+    category_word_pos_matrix = build_category_word_pos_matrix(
+        word_pos_category,
+        word_pos_unit_summary,
+        category_ids,
+    )
+
+    raw_words_dir = output_dir / "matrices" / "raw_words"
+    pos_split_dir = output_dir / "matrices" / "pos_split_words"
+    write_csv(
+        category_word_matrix.reset_index(),
+        raw_words_dir / "category_by_word_p_word_given_category.csv",
+    )
+    write_csv(
+        category_word_pos_matrix.reset_index(),
+        pos_split_dir / "category_by_word_pos_p_word_pos_given_category.csv",
+    )
+
+    # Preserve the original raw-word matrix path for compatibility with earlier
+    # versions of this script.
     write_csv(
         category_word_matrix.reset_index(),
         output_dir / "matrices" / "category_by_word_p_word_given_category.csv",
     )
 
-    raw_matrix = category_word_matrix.to_numpy(dtype=float)
-    cosine = labeled_matrix(cosine_similarity_matrix(raw_matrix), category_ids)
-    js = labeled_matrix(js_divergence_matrix(raw_matrix), category_ids)
-    top_k = labeled_matrix(top_k_overlap_matrix(raw_matrix, args.top_k_overlap), category_ids)
-    write_csv(cosine.reset_index(), output_dir / "matrices" / "cosine_similarity.csv")
-    write_csv(js.reset_index(), output_dir / "matrices" / "js_divergence.csv")
+    token_counts = df.groupby("viterbi_preterminal").size()
+    raw_overlap, raw_redundancy = write_overlap_analysis(
+        matrix=category_word_matrix,
+        output_dir=output_dir,
+        representation_slug="raw_words",
+        representation_title="Raw surface words",
+        category_ids=category_ids,
+        token_counts=token_counts,
+        top_k_value=args.top_k_overlap,
+        cluster_linkage=args.cluster_linkage,
+        skip_plots=args.skip_plots,
+    )
+    pos_overlap, pos_redundancy = write_overlap_analysis(
+        matrix=category_word_pos_matrix,
+        output_dir=output_dir,
+        representation_slug="pos_split_words",
+        representation_title="Context-sensitive word/POS units",
+        category_ids=category_ids,
+        token_counts=token_counts,
+        top_k_value=args.top_k_overlap,
+        cluster_linkage=args.cluster_linkage,
+        skip_plots=args.skip_plots,
+    )
+
+    raw_redundancy.insert(0, "representation", "raw_words")
+    pos_redundancy.insert(0, "representation", "pos_split_words")
     write_csv(
-        top_k.reset_index(),
+        pd.concat([raw_redundancy, pos_redundancy], ignore_index=True),
+        output_dir / "matrices" / "redundancy_summary_all_representations.csv",
+    )
+
+    # Preserve the original raw overlap-table paths for compatibility.
+    write_csv(
+        raw_overlap["cosine_similarity"].reset_index(),
+        output_dir / "matrices" / "cosine_similarity.csv",
+    )
+    write_csv(
+        raw_overlap["js_divergence"].reset_index(),
+        output_dir / "matrices" / "js_divergence.csv",
+    )
+    write_csv(
+        raw_overlap[f"top_{args.top_k_overlap}_overlap"].reset_index(),
         output_dir / "matrices" / f"top_{args.top_k_overlap}_word_overlap.csv",
     )
 
     if not args.skip_plots:
-        heatmap_dir = output_dir / "matrices" / "heatmaps"
-        save_square_heatmap(
-            cosine,
-            heatmap_dir / "cosine_similarity.png",
-            "Category cosine similarity over P(word | category)",
-            "Cosine similarity",
-        )
-        save_square_heatmap(
-            js,
-            heatmap_dir / "js_divergence.png",
-            "Category Jensen-Shannon divergence over P(word | category)",
-            "J-S divergence (bits)",
-        )
-        save_square_heatmap(
-            top_k,
-            heatmap_dir / f"top_{args.top_k_overlap}_word_overlap.png",
-            f"Category top-{args.top_k_overlap} word overlap",
-            "Intersection / K",
-        )
-        word_totals = df.groupby("word").size()
-        save_category_word_heatmap(
+        save_category_lexical_heatmap(
             category_word_matrix,
-            word_totals,
-            word_pos_summary,
-            args.matrix_heatmap_words,
-            heatmap_dir / "category_by_word.png",
+            lexical_summary=word_pos_summary.rename(
+                columns={"dominant_pos": "pos", "total_count": "token_count"}
+            ),
+            label_column="word",
+            pos_column="pos",
+            count_column="token_count",
+            max_columns=args.matrix_heatmap_words,
+            path=raw_words_dir / "heatmaps" / "category_by_word_pos_sections.png",
+            title=(
+                f"P(word | category), {args.matrix_heatmap_words} most frequent raw words"
+            ),
+            xlabel="Raw word, grouped by dominant context-sensitive spaCy POS",
+            colorbar_label="P(word | category)",
+        )
+        save_category_lexical_heatmap(
+            category_word_pos_matrix,
+            lexical_summary=word_pos_unit_summary,
+            label_column="word_pos",
+            pos_column="pos",
+            count_column="token_count",
+            max_columns=args.matrix_heatmap_words,
+            path=pos_split_dir / "heatmaps" / "category_by_word_pos_sections.png",
+            title=(
+                f"P(word.POS | category), {args.matrix_heatmap_words} most frequent "
+                "context-sensitive units"
+            ),
+            xlabel="Surface word.POS, grouped by token-level spaCy POS",
+            colorbar_label="P(word.POS | category)",
         )
         save_category_pos_heatmap(
             category_pos_matrix,
