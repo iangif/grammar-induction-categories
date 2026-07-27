@@ -82,15 +82,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Analyze induced preterminal categories from a token-level CSV.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input", required=True, type=Path, help="Input CSV or Parquet file.")
-    parser.add_argument("--output-dir", required=True, type=Path, help="Directory for analysis outputs.")
+    parser.add_argument(
+        "--input", required=True, type=Path, help="Input CSV or Parquet file."
+    )
+    parser.add_argument(
+        "--output-dir", required=True, type=Path, help="Directory for analysis outputs."
+    )
     parser.add_argument(
         "--num-categories",
         type=int,
         default=60,
         help="Expected categories, assumed to be numbered 0 through N-1.",
     )
-    parser.add_argument("--spacy-model", default="en_core_web_sm", help="spaCy model name or path.")
+    parser.add_argument(
+        "--spacy-model", default="en_core_web_sm", help="spaCy model name or path."
+    )
     parser.add_argument("--spacy-batch-size", type=int, default=256)
     parser.add_argument(
         "--spacy-processes",
@@ -98,7 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Processes passed to spaCy nlp.pipe. Use cautiously on clusters.",
     )
-    parser.add_argument("--top-n-words", type=int, default=25, help="Rows in each top-word ranking.")
+    parser.add_argument(
+        "--top-n-words", type=int, default=25, help="Rows in each top-word ranking."
+    )
     parser.add_argument(
         "--min-diagnostic-count",
         type=int,
@@ -203,11 +211,15 @@ def normalize_boolean(series: pd.Series) -> pd.Series:
     unknown = normalized.notna() & ~normalized.isin(mapping)
     if unknown.any():
         values = sorted(normalized.loc[unknown].dropna().unique().tolist())
-        raise ValueError(f"Unrecognized boolean values in preterminal_matches_length: {values}")
+        raise ValueError(
+            f"Unrecognized boolean values in preterminal_matches_length: {values}"
+        )
     return normalized.map(mapping).fillna(False).astype(bool)
 
 
-def prepare_input(df: pd.DataFrame, bos: str = "<BOS>", eos: str = "<EOS>") -> pd.DataFrame:
+def prepare_input(
+    df: pd.DataFrame, bos: str = "<BOS>", eos: str = "<EOS>"
+) -> pd.DataFrame:
     result = df.copy()
 
     integer_columns = [
@@ -221,13 +233,21 @@ def prepare_input(df: pd.DataFrame, bos: str = "<BOS>", eos: str = "<EOS>") -> p
     for column in integer_columns:
         result[column] = pd.to_numeric(result[column], errors="raise").astype("int64")
 
-    result["preterminal_matches_length"] = normalize_boolean(result["preterminal_matches_length"])
+    result["preterminal_matches_length"] = normalize_boolean(
+        result["preterminal_matches_length"]
+    )
     result["word"] = result["word"].astype("string")
     result["sentence"] = result["sentence"].astype("string")
 
-    result = result.sort_values(["sent_id", "word_index"], kind="stable").reset_index(drop=True)
-    result["previous_word"] = result.groupby("sent_id", sort=False)["word"].shift(1).fillna(bos)
-    result["next_word"] = result.groupby("sent_id", sort=False)["word"].shift(-1).fillna(eos)
+    result = result.sort_values(["sent_id", "word_index"], kind="stable").reset_index(
+        drop=True
+    )
+    result["previous_word"] = (
+        result.groupby("sent_id", sort=False)["word"].shift(1).fillna(bos)
+    )
+    result["next_word"] = (
+        result.groupby("sent_id", sort=False)["word"].shift(-1).fillna(eos)
+    )
 
     denominator = (result["sent_len"] - 1).clip(lower=1)
     result["normalized_sentence_position"] = result["word_index"] / denominator
@@ -267,7 +287,9 @@ def run_integrity_audit(
     ).reset_index()
 
     sentence_audit["expected_index_count"] = sentence_audit["sent_len"]
-    sentence_audit["row_count_matches_length"] = sentence_audit["row_count"] == sentence_audit["sent_len"]
+    sentence_audit["row_count_matches_length"] = (
+        sentence_audit["row_count"] == sentence_audit["sent_len"]
+    )
     sentence_audit["indices_match_length"] = (
         (sentence_audit["unique_word_indices"] == sentence_audit["sent_len"])
         & (sentence_audit["min_word_index"] == 0)
@@ -300,13 +322,25 @@ def run_integrity_audit(
 
     duplicate_pairs = int(df.duplicated(["sent_id", "word_index"]).sum())
     critical_nulls = int(
-        df[["sent_id", "sent_len", "word_index", "word", "viterbi_preterminal", "sentence"]]
+        df[
+            [
+                "sent_id",
+                "sent_len",
+                "word_index",
+                "word",
+                "viterbi_preterminal",
+                "sentence",
+            ]
+        ]
         .isna()
         .any(axis=1)
         .sum()
     )
     out_of_range = int(
-        ((df["viterbi_preterminal"] < 0) | (df["viterbi_preterminal"] >= num_categories)).sum()
+        (
+            (df["viterbi_preterminal"] < 0)
+            | (df["viterbi_preterminal"] >= num_categories)
+        ).sum()
     )
 
     metrics = [
@@ -326,7 +360,9 @@ def run_integrity_audit(
     audit = pd.DataFrame(metrics, columns=["metric", "value"])
 
     write_csv(audit, output_dir / "integrity" / "integrity_audit.csv")
-    write_csv(sentence_issues, output_dir / "integrity" / "sentence_integrity_issues.csv")
+    write_csv(
+        sentence_issues, output_dir / "integrity" / "sentence_integrity_issues.csv"
+    )
 
     has_problem = any(
         value > 0
@@ -416,9 +452,17 @@ def build_word_pos_summary(df: pd.DataFrame) -> pd.DataFrame:
     dominant = dominant.rename(
         columns={"spacy_pos": "dominant_pos", "pos_count": "dominant_pos_count"}
     )
-    dominant["dominant_pos_share"] = dominant["dominant_pos_count"] / dominant["total_count"]
+    dominant["dominant_pos_share"] = (
+        dominant["dominant_pos_count"] / dominant["total_count"]
+    )
     return dominant[
-        ["word", "dominant_pos", "dominant_pos_count", "total_count", "dominant_pos_share"]
+        [
+            "word",
+            "dominant_pos",
+            "dominant_pos_count",
+            "total_count",
+            "dominant_pos_share",
+        ]
     ]
 
 
@@ -460,9 +504,14 @@ def build_category_pos_distribution(
     extra_pos = sorted(set(df["spacy_pos"]) - set(present_pos))
     pos_columns = present_pos + extra_pos
     matrix = counts.pivot(index="c", columns="pos", values="p_pos_given_category")
-    matrix = matrix.reindex(index=category_ids, columns=pos_columns, fill_value=0.0).fillna(0.0)
+    matrix = matrix.reindex(
+        index=category_ids, columns=pos_columns, fill_value=0.0
+    ).fillna(0.0)
     matrix.index.name = "c"
-    return counts.sort_values(["c", "p_pos_given_category"], ascending=[True, False]), matrix
+    return (
+        counts.sort_values(["c", "p_pos_given_category"], ascending=[True, False]),
+        matrix,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -480,12 +529,12 @@ def build_word_category_distribution(df: pd.DataFrame) -> pd.DataFrame:
     category_totals = df.groupby("viterbi_preterminal").size()
     word_totals = df.groupby("word").size()
 
-    distribution["p_word_given_category"] = (
-        distribution["count"] / distribution["c"].map(category_totals)
-    )
-    distribution["p_category_given_word"] = distribution["count"] / distribution["w"].map(
-        word_totals
-    )
+    distribution["p_word_given_category"] = distribution["count"] / distribution[
+        "c"
+    ].map(category_totals)
+    distribution["p_category_given_word"] = distribution["count"] / distribution[
+        "w"
+    ].map(word_totals)
 
     return distribution[
         [
@@ -497,6 +546,7 @@ def build_word_category_distribution(df: pd.DataFrame) -> pd.DataFrame:
             "n_sentences",
         ]
     ].sort_values(["c", "p_word_given_category", "w"], ascending=[True, False, True])
+
 
 def build_word_category_ambiguity(
     df: pd.DataFrame,
@@ -512,12 +562,7 @@ def build_word_category_ambiguity(
         .reset_index()
     )
 
-    token_counts = (
-        df.groupby("word")
-        .size()
-        .rename("token_count")
-        .reset_index()
-    )
+    token_counts = df.groupby("word").size().rename("token_count").reset_index()
 
     ambiguity = ambiguity.merge(
         token_counts,
@@ -556,8 +601,7 @@ def build_pos_ambiguity_summary(
             ascending=[True, False],
             kind="stable",
         )
-        .drop_duplicates("word")
-        [["word", "spacy_pos"]]
+        .drop_duplicates("word")[["word", "spacy_pos"]]
     )
 
     ambiguity = ambiguity.merge(
@@ -582,6 +626,7 @@ def build_pos_ambiguity_summary(
         )
     )
 
+
 def build_word_pos_category_distribution(df: pd.DataFrame) -> pd.DataFrame:
     """Build P(word.POS | category) and P(category | word.POS)."""
     distribution = (
@@ -602,12 +647,12 @@ def build_word_pos_category_distribution(df: pd.DataFrame) -> pd.DataFrame:
     )
     category_totals = df.groupby("viterbi_preterminal").size()
     unit_totals = df.groupby("word_pos").size()
-    distribution["p_word_pos_given_category"] = (
-        distribution["count"] / distribution["c"].map(category_totals)
-    )
-    distribution["p_category_given_word_pos"] = (
-        distribution["count"] / distribution["word_pos"].map(unit_totals)
-    )
+    distribution["p_word_pos_given_category"] = distribution["count"] / distribution[
+        "c"
+    ].map(category_totals)
+    distribution["p_category_given_word_pos"] = distribution["count"] / distribution[
+        "word_pos"
+    ].map(unit_totals)
     return distribution[
         [
             "c",
@@ -631,12 +676,18 @@ def build_category_summary(
     category_ids: Sequence[int],
 ) -> pd.DataFrame:
     total_tokens = len(df)
-    token_count = df.groupby("viterbi_preterminal").size().reindex(category_ids, fill_value=0)
+    token_count = (
+        df.groupby("viterbi_preterminal").size().reindex(category_ids, fill_value=0)
+    )
     word_type_count = (
-        df.groupby("viterbi_preterminal")["word"].nunique().reindex(category_ids, fill_value=0)
+        df.groupby("viterbi_preterminal")["word"]
+        .nunique()
+        .reindex(category_ids, fill_value=0)
     )
     sentence_count = (
-        df.groupby("viterbi_preterminal")["sent_id"].nunique().reindex(category_ids, fill_value=0)
+        df.groupby("viterbi_preterminal")["sent_id"]
+        .nunique()
+        .reindex(category_ids, fill_value=0)
     )
     median_position = (
         df.groupby("viterbi_preterminal")["normalized_sentence_position"]
@@ -644,11 +695,13 @@ def build_category_summary(
         .reindex(category_ids)
     )
 
-    sentence_lengths = df[["viterbi_preterminal", "sent_id", "sent_len"]].drop_duplicates(
-        ["viterbi_preterminal", "sent_id"]
-    )
+    sentence_lengths = df[
+        ["viterbi_preterminal", "sent_id", "sent_len"]
+    ].drop_duplicates(["viterbi_preterminal", "sent_id"])
     mean_sentence_length = (
-        sentence_lengths.groupby("viterbi_preterminal")["sent_len"].mean().reindex(category_ids)
+        sentence_lengths.groupby("viterbi_preterminal")["sent_len"]
+        .mean()
+        .reindex(category_ids)
     )
 
     entropy = (
@@ -676,7 +729,9 @@ def build_category_summary(
         {
             "c": category_ids,
             "token_count": token_count.to_numpy(),
-            "token_share": token_count.to_numpy() / total_tokens if total_tokens else 0.0,
+            "token_share": (
+                token_count.to_numpy() / total_tokens if total_tokens else 0.0
+            ),
             "word_type_count": word_type_count.to_numpy(),
             "sentence_count": sentence_count.to_numpy(),
             "type_token_ratio": np.divide(
@@ -875,7 +930,14 @@ def append_examples(
     if rows.empty:
         return
     chunk = rows[
-        ["viterbi_preterminal", "word", "word_index", "previous_word", "next_word", "sentence"]
+        [
+            "viterbi_preterminal",
+            "word",
+            "word_index",
+            "previous_word",
+            "next_word",
+            "sentence",
+        ]
     ].copy()
     chunk = chunk.rename(columns={"viterbi_preterminal": "c", "word": "w"})
     chunk["selection_reason"] = reason
@@ -886,7 +948,9 @@ def combine_example_reasons(examples: pd.DataFrame) -> pd.DataFrame:
     if examples.empty:
         return pd.DataFrame(columns=OUTPUT_EXAMPLE_COLUMNS)
 
-    key_columns = [column for column in OUTPUT_EXAMPLE_COLUMNS if column != "selection_reason"]
+    key_columns = [
+        column for column in OUTPUT_EXAMPLE_COLUMNS if column != "selection_reason"
+    ]
     combined = (
         examples.groupby(key_columns, dropna=False, sort=False)["selection_reason"]
         .agg(lambda values: ";".join(dict.fromkeys(values)))
@@ -989,7 +1053,9 @@ def build_category_word_matrix(
 ) -> pd.DataFrame:
     pos_rank = {pos: index for index, pos in enumerate(POS_ORDER)}
     ordering = word_pos_summary.copy()
-    ordering["_pos_rank"] = ordering["dominant_pos"].map(pos_rank).fillna(len(POS_ORDER))
+    ordering["_pos_rank"] = (
+        ordering["dominant_pos"].map(pos_rank).fillna(len(POS_ORDER))
+    )
     ordering = ordering.sort_values(
         ["_pos_rank", "dominant_pos", "total_count", "word"],
         ascending=[True, True, False, True],
@@ -998,7 +1064,9 @@ def build_category_word_matrix(
     ordered_words = ordering["word"].tolist()
 
     matrix = word_category.pivot(index="c", columns="w", values="p_word_given_category")
-    matrix = matrix.reindex(index=category_ids, columns=ordered_words, fill_value=0.0).fillna(0.0)
+    matrix = matrix.reindex(
+        index=category_ids, columns=ordered_words, fill_value=0.0
+    ).fillna(0.0)
     matrix.index.name = "c"
     return matrix
 
@@ -1119,7 +1187,9 @@ def nearest_other(
         if finite_indices.size == 0:
             continue
         local = row[finite_indices]
-        chosen = finite_indices[np.argmax(local) if higher_is_closer else np.argmin(local)]
+        chosen = finite_indices[
+            np.argmax(local) if higher_is_closer else np.argmin(local)
+        ]
         nearest_ids[index] = float(category_array[chosen])
         nearest_values[index] = float(row[chosen])
     return nearest_ids, nearest_values
@@ -1137,7 +1207,9 @@ def average_metric_order(
             "mean_off_diagonal_metric": means,
         }
     )
-    order_table["has_finite_metric"] = np.isfinite(order_table["mean_off_diagonal_metric"])
+    order_table["has_finite_metric"] = np.isfinite(
+        order_table["mean_off_diagonal_metric"]
+    )
     order_table = order_table.sort_values(
         ["has_finite_metric", "mean_off_diagonal_metric", "c"],
         ascending=[False, not higher_is_more_redundant, True],
@@ -1215,7 +1287,9 @@ def build_redundancy_summary(
     cosine_nearest, cosine_nearest_value = nearest_other(
         cosine, category_ids, higher_is_closer=True
     )
-    js_nearest, js_nearest_value = nearest_other(js, category_ids, higher_is_closer=False)
+    js_nearest, js_nearest_value = nearest_other(
+        js, category_ids, higher_is_closer=False
+    )
     top_k_nearest, top_k_nearest_value = nearest_other(
         top_k, category_ids, higher_is_closer=True
     )
@@ -1294,7 +1368,11 @@ def save_position_plot(table: pd.DataFrame, path: Path, title: str) -> None:
         return
     centers = (table["bin_left"] + table["bin_right"]) / 2
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(centers, table["proportion"], width=(table["bin_right"] - table["bin_left"]) * 0.9)
+    ax.bar(
+        centers,
+        table["proportion"],
+        width=(table["bin_right"] - table["bin_left"]) * 0.9,
+    )
     ax.set_xlim(0, 1)
     ax.set_title(title)
     ax.set_xlabel("Normalized sentence position")
@@ -1602,7 +1680,9 @@ def write_per_category_outputs(
         )
         write_csv(examples, category_dir / "representative_sentences.csv")
 
-        llm_input = build_llm_input(df=df, category=category, max_rows=args.llm_input_max_rows)
+        llm_input = build_llm_input(
+            df=df, category=category, max_rows=args.llm_input_max_rows
+        )
         write_csv(llm_input, category_dir / "llm_input.csv")
         if not llm_input.empty:
             combined = llm_input.copy()
@@ -1749,7 +1829,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             stacklevel=2,
         )
 
-    print(f"Tagging exact exported tokens with spaCy model '{args.spacy_model}' ...", flush=True)
+    print(
+        f"Tagging exact exported tokens with spaCy model '{args.spacy_model}' ...",
+        flush=True,
+    )
     df = add_spacy_pos(
         df,
         model_name=args.spacy_model,
@@ -1835,7 +1918,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_csv(summary, output_dir / "category_summary.csv")
 
     print("Computing immediate-context distributions ...", flush=True)
-    previous_words = build_ranked_context_table(df, ["previous_word"], args.top_contexts)
+    previous_words = build_ranked_context_table(
+        df, ["previous_word"], args.top_contexts
+    )
     next_words = build_ranked_context_table(df, ["next_word"], args.top_contexts)
     frames = build_ranked_context_table(
         df, ["previous_word", "next_word"], args.top_contexts
@@ -1844,14 +1929,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_csv(previous_words, output_dir / "context" / "previous_word_rankings.csv")
     write_csv(next_words, output_dir / "context" / "next_word_rankings.csv")
     write_csv(frames, output_dir / "context" / "context_frame_rankings.csv")
-    write_csv(positions, output_dir / "context" / "normalized_position_distribution.csv")
+    write_csv(
+        positions, output_dir / "context" / "normalized_position_distribution.csv"
+    )
 
     print("Building spaCy POS and lexical-distribution matrices ...", flush=True)
     category_pos_distribution, category_pos_matrix = build_category_pos_distribution(
         df, category_ids
     )
-    write_csv(category_pos_distribution, output_dir / "pos" / "category_pos_distribution.csv")
-    write_csv(category_pos_matrix.reset_index(), output_dir / "pos" / "category_pos_matrix.csv")
+    write_csv(
+        category_pos_distribution, output_dir / "pos" / "category_pos_distribution.csv"
+    )
+    write_csv(
+        category_pos_matrix.reset_index(),
+        output_dir / "pos" / "category_pos_matrix.csv",
+    )
 
     category_word_matrix = build_category_word_matrix(
         word_category,
