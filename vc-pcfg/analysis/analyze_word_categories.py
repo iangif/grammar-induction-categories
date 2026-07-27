@@ -69,53 +69,8 @@ import spacy
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
 from spacy.tokens import Doc
-
-
-REQUIRED_COLUMNS = [
-    "sent_id",
-    "sent_len",
-    "word_index",
-    "word_id",
-    "word",
-    "viterbi_preterminal",
-    "left_context",
-    "right_context",
-    "sentence",
-    "num_preterminal_assignments",
-    "preterminal_matches_length",
-]
-
-OUTPUT_EXAMPLE_COLUMNS = [
-    "c",
-    "w",
-    "word_index",
-    "previous_word",
-    "next_word",
-    "sentence",
-    "selection_reason",
-]
-
-POS_ORDER = [
-    "DET",
-    "PRON",
-    "PROPN",
-    "NOUN",
-    "ADJ",
-    "NUM",
-    "AUX",
-    "VERB",
-    "ADV",
-    "ADP",
-    "PART",
-    "CCONJ",
-    "SCONJ",
-    "INTJ",
-    "PUNCT",
-    "SYM",
-    "X",
-    "SPACE",
-]
-
+from .constants.columns import REQUIRED_COLUMNS, OUTPUT_EXAMPLE_COLUMNS
+from .constants.pos import POS_ORDER
 
 # ---------------------------------------------------------------------------
 # CLI and I/O
