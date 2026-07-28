@@ -195,14 +195,22 @@ def build_parser() -> argparse.ArgumentParser:
 def load_input(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Input file does not exist: {path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"Input path is not a file: {path}")
 
     suffix = path.suffix.lower()
-    if suffix == ".csv":
-        df = pd.read_csv(path, low_memory=False)
-    elif suffix in {".parquet", ".pq"}:
-        df = pd.read_parquet(path)
-    else:
-        raise ValueError("Input must be a .csv, .parquet, or .pq file.")
+    try:
+        if suffix == ".csv":
+            df = pd.read_csv(path, low_memory=False)
+        elif suffix in {".parquet", ".pq"}:
+            df = pd.read_parquet(path)
+        else:
+            raise ValueError(
+                f"Unsupported input format '{suffix}'. "
+                "Expected .csv, .parquet, or .pq."
+            )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load input file {path}: {exc}") from exc
 
     missing = [column for column in REQUIRED_COLUMNS if column not in df.columns]
     if missing:
