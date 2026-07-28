@@ -82,55 +82,82 @@ def build_parser() -> argparse.ArgumentParser:
         description="Analyze induced preterminal categories from a token-level CSV.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
+
+    # Argument groups allow arguments to be displayed by category in the output of --help.
+    io_parser = parser.add_argument_group("Input/output")
+    spacy_parser = parser.add_argument_group("spaCy")
+    analysis_parser = parser.add_argument_group("Analysis")
+    examples_parser = parser.add_argument_group("Examples")
+    plots_parser = parser.add_argument_group("Plots")
+
+    # IO arguments
+    io_parser.add_argument(
         "--input", required=True, type=Path, help="Input CSV or Parquet file."
     )
-    parser.add_argument(
+    io_parser.add_argument(
         "--output-dir", required=True, type=Path, help="Directory for analysis outputs."
     )
-    parser.add_argument(
-        "--num-categories",
-        type=int,
-        default=60,
-        help="Expected categories, assumed to be numbered 0 through N-1.",
-    )
-    parser.add_argument(
+
+    # SpaCy arguments
+    spacy_parser.add_argument(
         "--spacy-model", default="en_core_web_sm", help="spaCy model name or path."
     )
-    parser.add_argument("--spacy-batch-size", type=int, default=256)
-    parser.add_argument(
+    spacy_parser.add_argument("--spacy-batch-size", type=int, default=256)
+    spacy_parser.add_argument(
         "--spacy-processes",
         type=int,
         default=1,
         help="Processes passed to spaCy nlp.pipe. Use cautiously on clusters.",
     )
-    parser.add_argument(
+
+    # Analysis arguments
+    analysis_parser.add_argument(
+        "--num-categories",
+        type=int,
+        default=60,
+        help="Expected categories, assumed to be numbered 0 through N-1.",
+    )
+    analysis_parser.add_argument(
         "--top-n-words", type=int, default=25, help="Rows in each top-word ranking."
     )
-    parser.add_argument(
+    analysis_parser.add_argument(
         "--min-diagnostic-count",
         type=int,
         default=10,
         help="Minimum corpus frequency for a word to enter diagnostic rankings.",
     )
-    parser.add_argument(
+    analysis_parser.add_argument(
         "--log-odds-prior-strength",
         type=float,
         default=1000.0,
         help="Total mass of the informative Dirichlet prior for weighted log odds.",
     )
-    parser.add_argument("--top-contexts", type=int, default=25)
-    parser.add_argument("--position-bins", type=int, default=10)
-    parser.add_argument(
+    analysis_parser.add_argument("--top-contexts", type=int, default=25)
+    analysis_parser.add_argument("--position-bins", type=int, default=10)
+    analysis_parser.add_argument(
         "--examples-per-word",
         type=int,
         default=2,
         help="Representative sentences sampled for each frequent/diagnostic word.",
     )
-    parser.add_argument("--random-examples", type=int, default=20)
-    parser.add_argument("--top-frames-for-examples", type=int, default=5)
-    parser.add_argument("--examples-per-frame", type=int, default=3)
-    parser.add_argument(
+    analysis_parser.add_argument(
+        "--top-k-overlap",
+        type=int,
+        default=25,
+        help="K for |TopK(c1) intersection TopK(c2)| / K.",
+    )
+    analysis_parser.add_argument("--random-seed", type=int, default=42)
+    analysis_parser.add_argument(
+        "--strict-integrity",
+        action="store_true",
+        help="Stop after writing the audit if sentence lengths, assignments, or token positions are inconsistent.",
+    )
+
+    # Examples arguments
+    examples_parser.add_argument("--random-examples", type=int, default=20)
+    examples_parser.add_argument("--top-frames-for-examples", type=int, default=5)
+    examples_parser.add_argument("--examples-per-frame", type=int, default=3)
+    examples_parser.add_argument(
         "--llm-input-max-rows",
         type=int,
         default=0,
@@ -139,13 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Use 0 to include all rows."
         ),
     )
-    parser.add_argument(
-        "--top-k-overlap",
-        type=int,
-        default=25,
-        help="K for |TopK(c1) intersection TopK(c2)| / K.",
-    )
-    parser.add_argument(
+
+    # Plots arguments
+    plots_parser.add_argument(
         "--matrix-heatmap-words",
         type=int,
         default=100,
@@ -154,23 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
             "category-by-lexical-unit heatmap. The CSV matrices contain all columns."
         ),
     )
-    parser.add_argument(
+    plots_parser.add_argument(
         "--cluster-linkage",
         choices=["average", "complete", "single", "weighted"],
         default="average",
         help="Linkage method used for hierarchical ordering of overlap heatmaps.",
     )
-    parser.add_argument("--random-seed", type=int, default=42)
-    parser.add_argument(
+    plots_parser.add_argument(
         "--skip-plots",
         action="store_true",
         help="Write all tables but skip PNG plots and heatmaps.",
     )
-    parser.add_argument(
-        "--strict-integrity",
-        action="store_true",
-        help="Stop after writing the audit if sentence lengths, assignments, or token positions are inconsistent.",
-    )
+
     return parser
 
 
