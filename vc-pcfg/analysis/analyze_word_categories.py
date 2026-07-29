@@ -8,6 +8,7 @@ This script creates:
 * frequent-word and weighted-log-odds diagnostic rankings
 * immediate-context distributions
 * representative examples
+* standardized per-category evidence packets (JSON plus example CSVs)
 * LLM-ready [word, sentence] tables
 * a raw category-by-word matrix and a context-sensitive word/POS matrix
 * POS-delimited category-by-word heatmaps
@@ -95,6 +96,29 @@ OUTPUT_EXAMPLE_COLUMNS = [
     "selection_reason",
 ]
 
+
+EVIDENCE_EXAMPLE_COLUMNS = [
+    "target_category",
+    "assigned_category",
+    "example_role",
+    "evidence_reasons",
+    "w",
+    "word_pos",
+    "pos",
+    "tag",
+    "sent_id",
+    "word_index",
+    "previous_word",
+    "next_word",
+    "sentence",
+    "category_word_count",
+    "corpus_word_count",
+    "num_categories_for_word",
+    "p_word_given_category",
+    "p_category_given_word",
+    "weighted_log_odds",
+]
+
 POS_ORDER = [
     "DET",
     "PRON",
@@ -175,6 +199,81 @@ def build_parser() -> argparse.ArgumentParser:
             "Maximum token rows in each category's LLM-input table. "
             "Use 0 to include all rows."
         ),
+    )
+    parser.add_argument(
+        "--evidence-frequent-words",
+        type=int,
+        default=20,
+        help="Frequent word types included in each standardized evidence packet.",
+    )
+    parser.add_argument(
+        "--evidence-diagnostic-words",
+        type=int,
+        default=20,
+        help="Weighted-log-odds diagnostic word types included in each evidence packet.",
+    )
+    parser.add_argument(
+        "--evidence-examples-per-word",
+        type=int,
+        default=1,
+        help="Target-category sentence examples sampled for each frequent or diagnostic word.",
+    )
+    parser.add_argument(
+        "--evidence-random-examples",
+        type=int,
+        default=20,
+        help="Random target-category token examples included in each evidence packet.",
+    )
+    parser.add_argument(
+        "--evidence-ambiguous-words",
+        type=int,
+        default=10,
+        help=(
+            "Words assigned to multiple induced categories whose within-category and "
+            "cross-category behavior is summarized in each evidence packet."
+        ),
+    )
+    parser.add_argument(
+        "--evidence-examples-per-ambiguous-word",
+        type=int,
+        default=2,
+        help="Target-category examples sampled for each selected ambiguous word.",
+    )
+    parser.add_argument(
+        "--evidence-contrast-examples-per-ambiguous-word",
+        type=int,
+        default=2,
+        help="Examples from other categories sampled for each selected ambiguous word.",
+    )
+    parser.add_argument(
+        "--evidence-rare-examples",
+        type=int,
+        default=10,
+        help="Low-frequency target-category examples included in each evidence packet.",
+    )
+    parser.add_argument(
+        "--evidence-rare-max-count",
+        type=int,
+        default=5,
+        help="Maximum corpus token count for a word to qualify as rare evidence.",
+    )
+    parser.add_argument(
+        "--evidence-top-contexts",
+        type=int,
+        default=10,
+        help="Previous-word and next-word contexts included in each evidence packet.",
+    )
+    parser.add_argument(
+        "--evidence-top-frames",
+        type=int,
+        default=10,
+        help="Immediate previous/next word frames included in each evidence packet.",
+    )
+    parser.add_argument(
+        "--evidence-top-word-pos-units",
+        type=int,
+        default=20,
+        help="Context-sensitive word.POS units included in each evidence packet.",
     )
     parser.add_argument(
         "--top-k-overlap",
@@ -284,6 +383,20 @@ def prepare_input(df: pd.DataFrame, bos: str = "<BOS>", eos: str = "<EOS>") -> p
 def write_csv(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
+
+
+def write_json(data: Any, path: Path) -> None:
+    """Write JSON using UTF-8 and stable, human-readable indentation."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+
+
+def dataframe_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """Convert a dataframe to JSON-safe records, mapping NaN values to null."""
+    if frame.empty:
+        return []
+    return json.loads(frame.to_json(orient="records"))
 
 
 # ---------------------------------------------------------------------------
@@ -706,16 +819,21 @@ def build_category_summary(
         .reindex(category_ids, fill_value=0.0)
     )
 
-    top_10_coverage = (
-        word_category.sort_values(["c", "count"], ascending=[True, False])
-        .groupby("c", sort=False)
-        .head(10)
-        .groupby("c")["count"]
-        .sum()
-        .div(token_count.replace(0, np.nan))
-        .reindex(category_ids)
-        .fillna(0.0)
-    )
+    def top_n_coverage(n: int) -> pd.Series:
+        return (
+            word_category.sort_values(["c", "count"], ascending=[True, False])
+            .groupby("c", sort=False)
+            .head(n)
+            .groupby("c")["count"]
+            .sum()
+            .div(token_count.replace(0, np.nan))
+            .reindex(category_ids)
+            .fillna(0.0)
+        )
+
+    top_1_coverage = top_n_coverage(1)
+    top_5_coverage = top_n_coverage(5)
+    top_10_coverage = top_n_coverage(10)
 
     summary = pd.DataFrame(
         {
@@ -731,6 +849,8 @@ def build_category_summary(
                 where=token_count.to_numpy() != 0,
             ),
             "word_entropy": entropy.to_numpy(),
+            "top_1_coverage": top_1_coverage.to_numpy(),
+            "top_5_coverage": top_5_coverage.to_numpy(),
             "top_10_coverage": top_10_coverage.to_numpy(),
             "median_sentence_position": median_position.to_numpy(),
             "mean_sentence_length": mean_sentence_length.to_numpy(),
@@ -1020,6 +1140,468 @@ def build_llm_input(
         result = result.head(max_rows)
 
     return result.reset_index(drop=True)
+
+
+
+# ---------------------------------------------------------------------------
+# Standardized qualitative evidence packets
+# ---------------------------------------------------------------------------
+
+
+def build_evidence_word_rankings(
+    word_scores: pd.DataFrame,
+    category: int,
+    frequent_n: int,
+    diagnostic_n: int,
+    min_diagnostic_count: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build packet-specific lexical rankings without depending on --top-n-words."""
+    category_scores = word_scores.loc[word_scores["c"].eq(category)].copy()
+
+    frequent = category_scores.sort_values(
+        ["count", "p_category_given_word", "w"],
+        ascending=[False, False, True],
+        kind="stable",
+    ).head(frequent_n)
+    frequent = frequent.copy()
+    frequent.insert(0, "rank", np.arange(1, len(frequent) + 1))
+    frequent = frequent[
+        [
+            "rank",
+            "w",
+            "count",
+            "word_total_count",
+            "p_word_given_category",
+            "p_category_given_word",
+            "n_sentences",
+        ]
+    ]
+
+    diagnostic = category_scores.loc[
+        category_scores["word_total_count"].ge(min_diagnostic_count)
+        & category_scores["weighted_log_odds"].gt(0)
+    ].sort_values(
+        ["weighted_log_odds", "count", "w"],
+        ascending=[False, False, True],
+        kind="stable",
+    ).head(diagnostic_n)
+    diagnostic = diagnostic.copy()
+    diagnostic.insert(0, "rank", np.arange(1, len(diagnostic) + 1))
+    diagnostic = diagnostic[
+        [
+            "rank",
+            "w",
+            "weighted_log_odds",
+            "count",
+            "word_total_count",
+            "p_word_given_category",
+            "p_category_given_word",
+            "n_sentences",
+        ]
+    ]
+    return frequent, diagnostic
+
+
+def choose_diverse_category_rows(
+    frame: pd.DataFrame,
+    n: int,
+    rng: np.random.Generator,
+) -> pd.DataFrame:
+    """Choose rows while preferring coverage of different assigned categories."""
+    if n <= 0 or frame.empty:
+        return frame.iloc[0:0].copy()
+
+    candidates = frame.drop_duplicates(["viterbi_preterminal", "sent_id", "word_index"])
+    first_pass: list[pd.DataFrame] = []
+    for _, group in candidates.groupby("viterbi_preterminal", sort=True):
+        first_pass.append(choose_rows(group, 1, rng))
+
+    diverse = pd.concat(first_pass, ignore_index=False) if first_pass else candidates.iloc[0:0]
+    diverse = choose_rows(diverse, min(n, len(diverse)), rng)
+    if len(diverse) >= n:
+        return diverse
+
+    remaining = candidates.drop(index=diverse.index, errors="ignore")
+    extra = choose_rows(remaining, n - len(diverse), rng)
+    return pd.concat([diverse, extra], ignore_index=False)
+
+
+def append_evidence_examples(
+    selected: list[pd.DataFrame],
+    rows: pd.DataFrame,
+    target_category: int,
+    example_role: str,
+    reason: str,
+) -> None:
+    if rows.empty:
+        return
+    chunk = rows[
+        [
+            "viterbi_preterminal",
+            "word",
+            "word_pos",
+            "spacy_pos",
+            "spacy_tag",
+            "sent_id",
+            "word_index",
+            "previous_word",
+            "next_word",
+            "sentence",
+        ]
+    ].copy()
+    chunk = chunk.rename(
+        columns={
+            "viterbi_preterminal": "assigned_category",
+            "word": "w",
+            "spacy_pos": "pos",
+            "spacy_tag": "tag",
+        }
+    )
+    chunk.insert(0, "target_category", target_category)
+    chunk.insert(2, "example_role", example_role)
+    chunk.insert(3, "evidence_reasons", reason)
+    selected.append(chunk)
+
+
+def build_ambiguity_profiles(
+    word_scores: pd.DataFrame,
+    word_ambiguity: pd.DataFrame,
+    category: int,
+    max_words: int,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Select ambiguous words and summarize their distributions over categories."""
+    target_scores = word_scores.loc[word_scores["c"].eq(category)].merge(
+        word_ambiguity.rename(columns={"word": "w", "token_count": "ambiguity_token_count"}),
+        on="w",
+        how="left",
+    )
+    selected_words = target_scores.loc[target_scores["num_categories"].gt(1)].sort_values(
+        ["num_categories", "word_total_count", "count", "w"],
+        ascending=[False, False, False, True],
+        kind="stable",
+    ).head(max_words)
+
+    profiles: list[dict[str, Any]] = []
+    for row in selected_words.itertuples(index=False):
+        distribution = word_scores.loc[word_scores["w"].eq(row.w), [
+            "c",
+            "count",
+            "p_category_given_word",
+            "p_word_given_category",
+        ]].sort_values(["count", "c"], ascending=[False, True], kind="stable")
+        profiles.append(
+            {
+                "word": row.w,
+                "num_categories": int(row.num_categories),
+                "corpus_token_count": int(row.word_total_count),
+                "target_category_count": int(row.count),
+                "p_target_category_given_word": float(row.p_category_given_word),
+                "category_distribution": dataframe_records(distribution),
+            }
+        )
+    return selected_words, profiles
+
+
+def build_evidence_examples(
+    df: pd.DataFrame,
+    word_scores: pd.DataFrame,
+    word_ambiguity: pd.DataFrame,
+    category: int,
+    frequent: pd.DataFrame,
+    diagnostic: pd.DataFrame,
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Select balanced target-category evidence and explicit cross-category contrasts."""
+    category_rows = df.loc[df["viterbi_preterminal"].eq(category)]
+    if category_rows.empty:
+        return pd.DataFrame(columns=EVIDENCE_EXAMPLE_COLUMNS), []
+
+    rng = np.random.default_rng(args.random_seed + 10_000 + category)
+    selected: list[pd.DataFrame] = []
+
+    for row in frequent.itertuples(index=False):
+        candidates = category_rows.loc[category_rows["word"].eq(row.w)]
+        append_evidence_examples(
+            selected,
+            choose_rows(candidates, args.evidence_examples_per_word, rng),
+            category,
+            "target_category",
+            f"frequent_word:rank={row.rank}",
+        )
+
+    for row in diagnostic.itertuples(index=False):
+        candidates = category_rows.loc[category_rows["word"].eq(row.w)]
+        append_evidence_examples(
+            selected,
+            choose_rows(candidates, args.evidence_examples_per_word, rng),
+            category,
+            "target_category",
+            f"diagnostic_word:rank={row.rank}",
+        )
+
+    ambiguous_words, ambiguity_profiles = build_ambiguity_profiles(
+        word_scores=word_scores,
+        word_ambiguity=word_ambiguity,
+        category=category,
+        max_words=args.evidence_ambiguous_words,
+    )
+    for row in ambiguous_words.itertuples(index=False):
+        target_candidates = category_rows.loc[category_rows["word"].eq(row.w)]
+        append_evidence_examples(
+            selected,
+            choose_rows(
+                target_candidates,
+                args.evidence_examples_per_ambiguous_word,
+                rng,
+            ),
+            category,
+            "target_category",
+            f"ambiguous_word:{row.w}:num_categories={int(row.num_categories)}",
+        )
+
+        contrast_candidates = df.loc[
+            df["word"].eq(row.w) & df["viterbi_preterminal"].ne(category)
+        ]
+        append_evidence_examples(
+            selected,
+            choose_diverse_category_rows(
+                contrast_candidates,
+                args.evidence_contrast_examples_per_ambiguous_word,
+                rng,
+            ),
+            category,
+            "cross_category_contrast",
+            f"ambiguous_word_contrast:{row.w}",
+        )
+
+    category_scores = word_scores.loc[word_scores["c"].eq(category)]
+    rare_words = category_scores.loc[
+        category_scores["word_total_count"].le(args.evidence_rare_max_count)
+    ].sort_values(
+        ["word_total_count", "count", "weighted_log_odds", "w"],
+        ascending=[True, False, False, True],
+        kind="stable",
+    ).head(args.evidence_rare_examples)
+    for row in rare_words.itertuples(index=False):
+        candidates = category_rows.loc[category_rows["word"].eq(row.w)]
+        append_evidence_examples(
+            selected,
+            choose_rows(candidates, 1, rng),
+            category,
+            "target_category",
+            f"rare_word:corpus_count={int(row.word_total_count)}",
+        )
+
+    random_candidates = category_rows.drop_duplicates(["word", "sentence"])
+    append_evidence_examples(
+        selected,
+        choose_rows(random_candidates, args.evidence_random_examples, rng),
+        category,
+        "target_category",
+        "random_token",
+    )
+
+    if not selected:
+        return pd.DataFrame(columns=EVIDENCE_EXAMPLE_COLUMNS), ambiguity_profiles
+
+    examples = pd.concat(selected, ignore_index=True)
+    key_columns = [
+        "target_category",
+        "assigned_category",
+        "example_role",
+        "w",
+        "word_pos",
+        "pos",
+        "tag",
+        "sent_id",
+        "word_index",
+        "previous_word",
+        "next_word",
+        "sentence",
+    ]
+    examples = (
+        examples.groupby(key_columns, dropna=False, sort=False)["evidence_reasons"]
+        .agg(lambda values: ";".join(dict.fromkeys(values)))
+        .reset_index()
+    )
+
+    score_lookup = word_scores[
+        [
+            "c",
+            "w",
+            "count",
+            "word_total_count",
+            "p_word_given_category",
+            "p_category_given_word",
+            "weighted_log_odds",
+        ]
+    ].rename(
+        columns={
+            "c": "assigned_category",
+            "count": "category_word_count",
+            "word_total_count": "corpus_word_count",
+        }
+    )
+    examples = examples.merge(score_lookup, on=["assigned_category", "w"], how="left")
+    examples = examples.merge(
+        word_ambiguity[["word", "num_categories"]].rename(
+            columns={"word": "w", "num_categories": "num_categories_for_word"}
+        ),
+        on="w",
+        how="left",
+    )
+    examples = examples[EVIDENCE_EXAMPLE_COLUMNS].sort_values(
+        ["example_role", "evidence_reasons", "w", "sent_id", "word_index"],
+        kind="stable",
+    ).reset_index(drop=True)
+    return examples, ambiguity_profiles
+
+
+def evidence_example_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    records = dataframe_records(frame)
+    for record in records:
+        reasons = record.get("evidence_reasons")
+        record["evidence_reasons"] = reasons.split(";") if reasons else []
+    return records
+
+
+def build_standardized_evidence_packet(
+    *,
+    df: pd.DataFrame,
+    category: int,
+    summary: pd.DataFrame,
+    word_scores: pd.DataFrame,
+    word_ambiguity: pd.DataFrame,
+    word_pos_category: pd.DataFrame,
+    category_pos_distribution: pd.DataFrame,
+    previous_words: pd.DataFrame,
+    next_words: pd.DataFrame,
+    frames: pd.DataFrame,
+    positions: pd.DataFrame,
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    """Build one self-contained, standardized packet for qualitative coding."""
+    frequent, diagnostic = build_evidence_word_rankings(
+        word_scores=word_scores,
+        category=category,
+        frequent_n=args.evidence_frequent_words,
+        diagnostic_n=args.evidence_diagnostic_words,
+        min_diagnostic_count=args.min_diagnostic_count,
+    )
+    examples, ambiguity_profiles = build_evidence_examples(
+        df=df,
+        word_scores=word_scores,
+        word_ambiguity=word_ambiguity,
+        category=category,
+        frequent=frequent,
+        diagnostic=diagnostic,
+        args=args,
+    )
+
+    category_rows = df.loc[df["viterbi_preterminal"].eq(category)]
+    tag_distribution = (
+        category_rows.assign(
+            spacy_tag=category_rows["spacy_tag"].replace("", "<EMPTY>")
+        )
+        .groupby("spacy_tag", observed=True)
+        .size()
+        .rename("count")
+        .reset_index()
+        .rename(columns={"spacy_tag": "tag"})
+    )
+    if not tag_distribution.empty:
+        tag_distribution["proportion"] = tag_distribution["count"] / len(category_rows)
+        tag_distribution = tag_distribution.sort_values(
+            ["count", "tag"], ascending=[False, True], kind="stable"
+        )
+
+    top_word_pos_units = word_pos_category.loc[word_pos_category["c"].eq(category)].sort_values(
+        ["count", "p_category_given_word_pos", "word_pos"],
+        ascending=[False, False, True],
+        kind="stable",
+    ).head(args.evidence_top_word_pos_units)
+
+    target_examples = examples.loc[examples["example_role"].eq("target_category")]
+    contrast_examples = examples.loc[
+        examples["example_role"].eq("cross_category_contrast")
+    ]
+
+    packet = {
+        "schema_version": "1.0",
+        "category_id": category,
+        "summary": dataframe_records(summary.loc[summary["c"].eq(category)])[0],
+        "sampling_config": {
+            "frequent_word_types": args.evidence_frequent_words,
+            "diagnostic_word_types": args.evidence_diagnostic_words,
+            "examples_per_frequent_or_diagnostic_word": args.evidence_examples_per_word,
+            "ambiguous_word_types": args.evidence_ambiguous_words,
+            "examples_per_ambiguous_word": args.evidence_examples_per_ambiguous_word,
+            "contrast_examples_per_ambiguous_word": (
+                args.evidence_contrast_examples_per_ambiguous_word
+            ),
+            "rare_examples": args.evidence_rare_examples,
+            "rare_max_corpus_count": args.evidence_rare_max_count,
+            "random_examples": args.evidence_random_examples,
+            "top_contexts": args.evidence_top_contexts,
+            "top_frames": args.evidence_top_frames,
+            "random_seed": args.random_seed + 10_000 + category,
+        },
+        "lexical_rankings": {
+            "frequent_words": dataframe_records(frequent),
+            "diagnostic_words": dataframe_records(diagnostic),
+            "top_context_sensitive_word_pos_units": dataframe_records(
+                top_word_pos_units.drop(columns="c", errors="ignore")
+            ),
+        },
+        "distributions": {
+            "pos": dataframe_records(
+                category_pos_distribution.loc[
+                    category_pos_distribution["c"].eq(category)
+                ].drop(columns="c", errors="ignore")
+            ),
+            "fine_grained_spacy_tags": dataframe_records(tag_distribution),
+            "previous_words": dataframe_records(
+                previous_words.loc[previous_words["c"].eq(category)]
+                .head(args.evidence_top_contexts)
+                .drop(columns="c", errors="ignore")
+            ),
+            "next_words": dataframe_records(
+                next_words.loc[next_words["c"].eq(category)]
+                .head(args.evidence_top_contexts)
+                .drop(columns="c", errors="ignore")
+            ),
+            "immediate_frames": dataframe_records(
+                frames.loc[frames["c"].eq(category)]
+                .head(args.evidence_top_frames)
+                .drop(columns="c", errors="ignore")
+            ),
+            "normalized_sentence_position": dataframe_records(
+                positions.loc[positions["c"].eq(category)].drop(
+                    columns="c", errors="ignore"
+                )
+            ),
+        },
+        "ambiguous_word_profiles": ambiguity_profiles,
+        "target_category_examples": evidence_example_records(target_examples),
+        "cross_category_contrast_examples": evidence_example_records(contrast_examples),
+        "notes": {
+            "target_category_examples": (
+                "All examples in this section were assigned to category_id. Exact duplicate "
+                "tokens selected by multiple criteria are merged, and evidence_reasons records "
+                "every selection criterion."
+            ),
+            "cross_category_contrast_examples": (
+                "These are explicitly marked comparison examples for ambiguous words that also "
+                "occur in other induced categories; do not treat them as members of category_id."
+            ),
+            "causal_caution": (
+                "The packet describes observed lexical and contextual patterns. Frequency, "
+                "context, semantics, or visual grounding should be treated as causal drivers only "
+                "when supported by comparisons across runs or model conditions."
+            ),
+        },
+    }
+    return packet, examples
 
 
 # ---------------------------------------------------------------------------
@@ -1599,6 +2181,10 @@ def write_per_category_outputs(
     category_ids: Sequence[int],
     summary: pd.DataFrame,
     word_category: pd.DataFrame,
+    word_scores: pd.DataFrame,
+    word_ambiguity: pd.DataFrame,
+    word_pos_category: pd.DataFrame,
+    category_pos_distribution: pd.DataFrame,
     frequent_words: pd.DataFrame,
     diagnostic_words: pd.DataFrame,
     previous_words: pd.DataFrame,
@@ -1609,6 +2195,9 @@ def write_per_category_outputs(
     args: argparse.Namespace,
 ) -> pd.DataFrame:
     combined_llm_inputs: list[pd.DataFrame] = []
+    combined_evidence_examples: list[pd.DataFrame] = []
+    evidence_packets: list[dict[str, Any]] = []
+    evidence_packet_index: list[dict[str, Any]] = []
     width = max(2, len(str(max(category_ids))) if category_ids else 2)
 
     for category in category_ids:
@@ -1654,6 +2243,46 @@ def write_per_category_outputs(
             combined.insert(0, "c", category)
             combined_llm_inputs.append(combined)
 
+        evidence_packet, evidence_examples = build_standardized_evidence_packet(
+            df=df,
+            category=category,
+            summary=summary,
+            word_scores=word_scores,
+            word_ambiguity=word_ambiguity,
+            word_pos_category=word_pos_category,
+            category_pos_distribution=category_pos_distribution,
+            previous_words=previous_words,
+            next_words=next_words,
+            frames=frames,
+            positions=positions,
+            args=args,
+        )
+        packet_path = category_dir / "evidence_packet.json"
+        example_path = category_dir / "evidence_packet_examples.csv"
+        write_json(evidence_packet, packet_path)
+        write_csv(evidence_examples, example_path)
+        evidence_packets.append(evidence_packet)
+        if not evidence_examples.empty:
+            combined_evidence_examples.append(evidence_examples)
+        evidence_packet_index.append(
+            {
+                "c": category,
+                "packet_path": str(packet_path.relative_to(output_dir)),
+                "examples_path": str(example_path.relative_to(output_dir)),
+                "target_example_count": int(
+                    evidence_examples["example_role"].eq("target_category").sum()
+                ),
+                "contrast_example_count": int(
+                    evidence_examples["example_role"].eq(
+                        "cross_category_contrast"
+                    ).sum()
+                ),
+                "ambiguous_word_profile_count": len(
+                    evidence_packet["ambiguous_word_profiles"]
+                ),
+            }
+        )
+
         if args.skip_plots:
             continue
 
@@ -1693,6 +2322,18 @@ def write_per_category_outputs(
             f"Category {category}: normalized sentence position",
         )
 
+    evidence_dir = output_dir / "evidence_packets"
+    write_csv(pd.DataFrame(evidence_packet_index), evidence_dir / "evidence_packet_index.csv")
+    if combined_evidence_examples:
+        all_evidence_examples = pd.concat(combined_evidence_examples, ignore_index=True)
+    else:
+        all_evidence_examples = pd.DataFrame(columns=EVIDENCE_EXAMPLE_COLUMNS)
+    write_csv(all_evidence_examples, evidence_dir / "evidence_examples_all_categories.csv")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    with (evidence_dir / "evidence_packets.jsonl").open("w", encoding="utf-8") as handle:
+        for packet in evidence_packets:
+            handle.write(json.dumps(packet, ensure_ascii=False) + "\n")
+
     if combined_llm_inputs:
         return pd.concat(combined_llm_inputs, ignore_index=True)
     return pd.DataFrame(columns=["c", "word", "sentence"])
@@ -1712,9 +2353,35 @@ def write_manifest(args: argparse.Namespace, output_dir: Path) -> None:
         "top_k_overlap": args.top_k_overlap,
         "cluster_linkage": args.cluster_linkage,
         "llm_input_max_rows": args.llm_input_max_rows,
+        "evidence_packet": {
+            "schema_version": "1.0",
+            "frequent_words": args.evidence_frequent_words,
+            "diagnostic_words": args.evidence_diagnostic_words,
+            "examples_per_word": args.evidence_examples_per_word,
+            "random_examples": args.evidence_random_examples,
+            "ambiguous_words": args.evidence_ambiguous_words,
+            "examples_per_ambiguous_word": args.evidence_examples_per_ambiguous_word,
+            "contrast_examples_per_ambiguous_word": (
+                args.evidence_contrast_examples_per_ambiguous_word
+            ),
+            "rare_examples": args.evidence_rare_examples,
+            "rare_max_count": args.evidence_rare_max_count,
+            "top_contexts": args.evidence_top_contexts,
+            "top_frames": args.evidence_top_frames,
+            "top_word_pos_units": args.evidence_top_word_pos_units,
+        },
         "random_seed": args.random_seed,
         "metric_definitions": {
             "word_entropy": "Natural-log entropy of P(word | category), measured in nats.",
+            "top_n_coverage": (
+                "Share of category tokens accounted for by the N most frequent word types; "
+                "reported for N = 1, 5, and 10."
+            ),
+            "evidence_packet": (
+                "A standardized JSON record containing category summary statistics, lexical "
+                "rankings, POS/tag and context distributions, ambiguity profiles, balanced "
+                "target-category examples, and explicitly labeled cross-category contrasts."
+            ),
             "mean_sentence_length": (
                 "Mean length of distinct sentences containing the category; each sentence "
                 "is counted once per category."
@@ -1762,6 +2429,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--top-n-words must be greater than zero.")
     if args.min_diagnostic_count <= 0:
         parser.error("--min-diagnostic-count must be greater than zero.")
+
+    nonnegative_evidence_args = {
+        "--evidence-frequent-words": args.evidence_frequent_words,
+        "--evidence-diagnostic-words": args.evidence_diagnostic_words,
+        "--evidence-examples-per-word": args.evidence_examples_per_word,
+        "--evidence-random-examples": args.evidence_random_examples,
+        "--evidence-ambiguous-words": args.evidence_ambiguous_words,
+        "--evidence-examples-per-ambiguous-word": (
+            args.evidence_examples_per_ambiguous_word
+        ),
+        "--evidence-contrast-examples-per-ambiguous-word": (
+            args.evidence_contrast_examples_per_ambiguous_word
+        ),
+        "--evidence-rare-examples": args.evidence_rare_examples,
+        "--evidence-top-contexts": args.evidence_top_contexts,
+        "--evidence-top-frames": args.evidence_top_frames,
+        "--evidence-top-word-pos-units": args.evidence_top_word_pos_units,
+    }
+    for option, value in nonnegative_evidence_args.items():
+        if value < 0:
+            parser.error(f"{option} must be zero or greater.")
+    if args.evidence_rare_max_count <= 0:
+        parser.error("--evidence-rare-max-count must be greater than zero.")
 
     output_dir: Path = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2015,6 +2705,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         category_ids=category_ids,
         summary=summary,
         word_category=word_category,
+        word_scores=word_scores,
+        word_ambiguity=word_ambiguity,
+        word_pos_category=word_pos_category,
+        category_pos_distribution=category_pos_distribution,
         frequent_words=frequent_words,
         diagnostic_words=diagnostic_words,
         previous_words=previous_words,
