@@ -1,4 +1,5 @@
 import os
+import sys
 import time, pickle, argparse, logging
 import numpy as np
 import torch
@@ -8,6 +9,7 @@ import vpcfg.as_dataloader as data
 from vpcfg.utils import Vocabulary, save_checkpoint
 from vpcfg.as_evaluation import AverageMeter, LogCollector, semantic_bootstrapping_test, syntactic_bootstrapping_test
 from vpcfg.as_vocab import get_vocab
+
 
 def train(opt, train_loader, model, epoch, val_loader):
     # average meters to record the training statistics
@@ -124,6 +126,9 @@ if __name__ == '__main__':
     parser.add_argument('--sem_first', action='store_true', help='Run semantics first model')
     parser.add_argument('--syn_first', action='store_true', help='Run syntax first model')
 
+    # NEW
+    parser.add_argument('--init_only', action='store_true', help='initialize model, save checkpoint, and exit')
+
     opt = parser.parse_args()
     np.random.seed(opt.seed)
     torch.manual_seed(opt.seed)
@@ -180,6 +185,10 @@ if __name__ == '__main__':
         'opt': opt,
         'Eiters': -1 }, False, -1, prefix=opt.logger_name)
         start_epoch = 0
+
+    if opt.init_only:
+        logger.info("Initialization complete. Exiting.")
+        sys.exit()
 
     # Load data loaders
     data.set_constant(opt.visual_mode, opt.max_length)

@@ -183,7 +183,8 @@ def collate_fun(data):
     images = torch.stack(images, 0)
     max_len = max([len(caption) for caption in captions])
     targets = torch.zeros(len(captions), max_len).long()
-    lengths = [len(cap) for cap in captions]
+    # lengths = [len(cap) for cap in captions]
+    lengths = torch.LongTensor([len(cap) for cap in captions])
     indices = torch.zeros(len(captions), max_len, 2).long()
     for i, cap in enumerate(captions):
         cap_len = len(cap)
@@ -203,8 +204,10 @@ def bi_collate_fun(data):
     max_len = max(max_len_tr, max_len_intr)
     targets_tr = torch.zeros(len(captions_transitive), max_len).long()
     targets_intr = torch.zeros(len(captions_intransitive), max_len).long()
-    lengths_tr = [len(cap) for cap in captions_transitive]
-    lengths_intr = [len(cap) for cap in captions_intransitive]
+    #lengths_tr = [len(cap) for cap in captions_transitive]
+    #lengths_intr = [len(cap) for cap in captions_intransitive]
+    lengths_tr = torch.LongTensor([len(cap) for cap in captions_transitive])
+    lengths_intr = torch.LongTensor([len(cap) for cap in captions_intransitive])
     indices_tr = torch.zeros(len(captions_transitive), max_len, 2).long()
     indices_intr = torch.zeros(len(captions_intransitive), max_len, 2).long()
     for i, cap in enumerate(captions_transitive):
