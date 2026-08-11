@@ -6,7 +6,7 @@ import pandas as pd
 
 from .constants.columns import EVIDENCE_EXAMPLE_COLUMNS
 from .examples import choose_rows
-from .io import dataframe_records
+from ..shared_utilities.io import dataframe_records
 
 
 def build_evidence_word_rankings(

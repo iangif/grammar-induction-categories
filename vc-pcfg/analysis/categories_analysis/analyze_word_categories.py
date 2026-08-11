@@ -68,7 +68,8 @@ from .distributions import (
     build_category_summary,
 )
 from .integrity import run_integrity_audit
-from .io import load_input, write_csv
+from ..shared_utilities.io import write_csv
+from .io import load_input
 from .matrices import build_category_word_matrix, build_category_word_pos_matrix
 from .plots import (
     save_category_lexical_heatmap,

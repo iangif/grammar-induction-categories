@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .io import write_csv
+from ..shared_utilities.io import write_csv
 
 
 def run_integrity_audit(
