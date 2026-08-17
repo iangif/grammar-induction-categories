@@ -5,13 +5,13 @@ All category analysis can be found in the `vc-pcfg/analysis/` directory.
 ## Current Scripts
 
 * `export_word_categories.py` exports a single CSV containing one row per token with its induced preterminal category and sentence context
-* `analyze_word_categories.py` comprehensively analyzes a single exported category CSV by category
+* `categories_analysis/main.py` comprehensively analyzes a single exported category CSV by category
 
-## Recommended Layout
+## Recommended Output Layout
 
 ```text
 vc-pcfg/analysis/outputs/
-├── category_analysis/      <-- store output of analyze_word_categories.py here
+├── category_analysis/      <-- store output of categories_analysis/main.py here
 │   └── s91-e5-c60/         <-- example analysis; named with seed, # epochs, and # preterminal categories
 ├── llm_response/           <-- store LLM qualitative response here
 │   ├── s91-e5-c60/
@@ -63,11 +63,11 @@ python as_train.py \
 python -m analysis.export_word_categories \
     --model_init analysis/outputs/model_checkpoints/random_init_test/checkpoints/checkpoint.pth.tar \
     --data_path ../preprocessed-data/abstractscenes \
-    --output_path analysis/outputs/random_word_categories.csv \
+    --output_path analysis/outputs/word_csvs/random_word_categories.csv \
     --use_mean_z # For reproducibility
 ```
 
-## Running `analyze_word_categories.py`
+## Running `categories_analysis/main.py`
 
 ```bash
 uv venv .venv-analysis --python 3.12.3
@@ -79,8 +79,8 @@ uv pip install https://github.com/explosion/spacy-models/releases/download/en_co
 
 cd vc-pcfg
 
-python -m analysis.analyze_word_categories \
-    --input analysis/outputs/s91-e5.csv \
+python -m analysis.categories_analysis.main \
+    --input analysis/outputs/word_csvs/s91-e5.csv \
     --output-dir analysis/outputs/category_analysis/s91-e5 \
     --spacy-model en_core_web_sm
 ```
@@ -142,7 +142,7 @@ python -m pip install -e "$HOME/pytorch-struct"
 
 ## Create the Cluster Script
 
-Make `scripts/` directory, and make `smoke_en_joint.sh` with contents the same as `vc-pcfg/analysis/cluster_script.sh`
+Make `scripts/` directory, and make `smoke_en_joint.sh` with contents the same as `vc-pcfg/analysis/resources/cluster_script.sh`
 
 You can edit the following:
 
@@ -173,7 +173,7 @@ sq
 View the status of the current run with the correct job ID:
 
 ```bash
-tail -f slurm-en_smoke-65480625.out
+tail -f slurm-en_smoke-<job_id>.out
 ```
 
 ## Retrieve the Model
