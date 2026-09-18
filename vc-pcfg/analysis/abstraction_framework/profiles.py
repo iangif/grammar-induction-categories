@@ -17,6 +17,7 @@ def _distribution_rows(
     domain: str,
     position: str,
     feature_name: str,
+    feature_family: str,
     category_sizes: pd.Series,
 ) -> pd.DataFrame:
     values = frame[value_column].astype("string").fillna(NULL_VALUE)
@@ -32,12 +33,14 @@ def _distribution_rows(
     counts.insert(1, "domain", domain)
     counts.insert(2, "position", position)
     counts.insert(3, "feature", feature_name)
+    counts.insert(4, "feature_family", feature_family)
     return counts[
         [
             "category",
             "domain",
             "position",
             "feature",
+            "feature_family",
             "value",
             "count",
             "category_token_count",
@@ -89,9 +92,9 @@ def build_category_feature_distributions(
     if not lexical_sizes.equals(contextual_sizes):
         raise ValueError("Lexical and contextual tables do not contain the same category token counts.")
 
-    blocks: list[tuple[pd.DataFrame, str, str, str, str]] = []
+    blocks: list[tuple[pd.DataFrame, str, str, str, str, str]] = []
     for feature in LEXICAL_FEATURES:
-        blocks.append((annotated_tokens, feature.column, "lexical", "TARGET", feature.name))
+        blocks.append((annotated_tokens, feature.column, "lexical", "TARGET", feature.name, feature.family))
     for position, _ in CONTEXT_POSITIONS:
         for feature in LEXICAL_FEATURES:
             blocks.append(
@@ -101,11 +104,12 @@ def build_category_feature_distributions(
                     "contextual",
                     position,
                     feature.name,
+                    feature.family,
                 )
             )
 
     rows: list[pd.DataFrame] = []
-    progress: Iterable[tuple[pd.DataFrame, str, str, str, str]] = tqdm(
+    progress: Iterable[tuple[pd.DataFrame, str, str, str, str, str]] = tqdm(
         blocks,
         total=len(blocks),
         desc="Building feature distributions",
@@ -113,7 +117,7 @@ def build_category_feature_distributions(
         dynamic_ncols=True,
         disable=not show_progress,
     )
-    for frame, value_column, domain, position, feature_name in progress:
+    for frame, value_column, domain, position, feature_name, feature_family in progress:
         rows.append(
             _distribution_rows(
                 frame,
@@ -121,6 +125,7 @@ def build_category_feature_distributions(
                 domain=domain,
                 position=position,
                 feature_name=feature_name,
+                feature_family=feature_family,
                 category_sizes=lexical_sizes,
             )
         )
@@ -132,6 +137,7 @@ def build_category_feature_distributions(
                 "domain",
                 "position",
                 "feature",
+                "feature_family",
                 "value",
                 "count",
                 "category_token_count",

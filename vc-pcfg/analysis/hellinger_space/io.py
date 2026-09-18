@@ -14,6 +14,7 @@ from .constants import (
     BLOCK_SUM_ATOL,
     BLOCK_SUM_RTOL,
     CONTEXT_DOMAIN,
+    FEATURE_FAMILY_BY_NAME,
     POSITION_ORDER,
     REQUIRED_COLUMNS,
     TARGET_DOMAIN,
@@ -47,6 +48,39 @@ def _canonicalize_category(series: pd.Series) -> pd.Series:
     return series.astype(str)
 
 
+def _read_csv(path: Path, *, label: str) -> pd.DataFrame:
+    if not path.exists():
+        raise HellingerSpaceError(f"{label} does not exist: {path}")
+    if path.suffix.lower() != ".csv":
+        raise HellingerSpaceError(f"{label} must be a .csv file.")
+    try:
+        return pd.read_csv(path, low_memory=False, keep_default_na=False)
+    except Exception as exc:
+        raise HellingerSpaceError(f"Could not read {label} {path}: {exc}") from exc
+
+
+def _ensure_feature_family(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    if "feature_family" not in result.columns:
+        result["feature_family"] = result["feature"].map(FEATURE_FAMILY_BY_NAME)
+    else:
+        result["feature_family"] = result["feature_family"].astype(str)
+        missing_family = result["feature_family"].eq("")
+        if missing_family.any():
+            inferred = result.loc[missing_family, "feature"].map(FEATURE_FAMILY_BY_NAME)
+            result.loc[missing_family, "feature_family"] = inferred
+
+    unknown = result["feature_family"].isna() | ~result["feature_family"].isin(
+        {"grammatical", "semantic"}
+    )
+    if unknown.any():
+        examples = sorted(result.loc[unknown, "feature"].astype(str).unique())[:10]
+        raise HellingerSpaceError(
+            "Could not determine grammatical/semantic family for feature(s): " + str(examples)
+        )
+    return result
+
+
 def read_feature_distributions(path: Path) -> pd.DataFrame:
     """Read and validate ``category_feature_distributions.csv``.
 
@@ -55,15 +89,7 @@ def read_feature_distributions(path: Path) -> pd.DataFrame:
     one observed distribution for every (domain, position, feature) block.
     """
 
-    if not path.exists():
-        raise HellingerSpaceError(f"Input file does not exist: {path}")
-    if path.suffix.lower() != ".csv":
-        raise HellingerSpaceError("Input must be a .csv feature-distribution file.")
-
-    try:
-        frame = pd.read_csv(path, low_memory=False, keep_default_na=False)
-    except Exception as exc:  # pandas supplies the useful parsing detail.
-        raise HellingerSpaceError(f"Could not read input CSV {path}: {exc}") from exc
+    frame = _read_csv(path, label="Input feature-distribution file")
 
     missing = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
     if missing:
@@ -80,6 +106,8 @@ def read_feature_distributions(path: Path) -> pd.DataFrame:
         frame[column] = frame[column].astype(str)
         if frame[column].eq("").any():
             raise HellingerSpaceError(f"{column} contains empty strings.")
+
+    frame = _ensure_feature_family(frame)
 
     unknown_positions = sorted(set(frame["position"]) - set(POSITION_ORDER))
     if unknown_positions:
@@ -166,6 +194,63 @@ def read_feature_distributions(path: Path) -> pd.DataFrame:
             f"Examples: {examples}"
         )
 
+    return frame
+
+
+def read_category_metrics(path: Path) -> pd.DataFrame:
+    frame = _read_csv(path, label="Category-metrics file")
+    required = {"category", "LD_eff"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise HellingerSpaceError(f"Category metrics is missing required columns: {missing}")
+    frame = frame.copy()
+    frame["category"] = _canonicalize_category(frame["category"])
+    frame["LD_eff"] = pd.to_numeric(frame["LD_eff"], errors="coerce")
+    ld = frame["LD_eff"].to_numpy(dtype=float)
+    if not np.isfinite(ld).all() or (ld < 0).any():
+        raise HellingerSpaceError("LD_eff must contain finite, non-negative values.")
+    if frame["category"].duplicated().any():
+        raise HellingerSpaceError("Category metrics must contain one row per category.")
+    return frame
+
+
+def read_feature_scores(path: Path) -> pd.DataFrame:
+    frame = _read_csv(path, label="Category-feature-scores file")
+    required = {
+        "category",
+        "domain",
+        "position",
+        "feature",
+        "modal_value",
+        "modal_coverage",
+        "corpus_coverage",
+        "normalized_coherence",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise HellingerSpaceError(f"Category feature scores is missing required columns: {missing}")
+    frame = frame.copy()
+    frame["category"] = _canonicalize_category(frame["category"])
+    for column in ("domain", "position", "feature"):
+        frame[column] = frame[column].astype(str)
+    frame = _ensure_feature_family(frame)
+
+    for column in ("modal_coverage", "corpus_coverage", "normalized_coherence"):
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        if column == "corpus_coverage":
+            # A feature with no non-NULL values has no corpus baseline; keep NaN.
+            empty = frame[column].astype(str).eq("")
+            numeric.loc[empty] = np.nan
+            invalid = numeric.notna() & ((numeric < 0.0) | (numeric > 1.0))
+        else:
+            invalid = numeric.isna() | (numeric < 0.0) | (numeric > 1.0)
+        if invalid.any():
+            raise HellingerSpaceError(f"{column} must lie in [0, 1] when defined.")
+        frame[column] = numeric.astype(float)
+
+    key = ["category", "domain", "position", "feature"]
+    if frame.duplicated(key).any():
+        raise HellingerSpaceError("Category feature scores must have one row per category/block.")
     return frame
 
 

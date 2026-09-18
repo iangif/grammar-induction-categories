@@ -8,7 +8,13 @@ from typing import Any
 import pandas as pd
 
 from .coherence import FeatureRef, score_modal_coherence
-from .constants import CONTEXT_RADIUS, LEXICAL_FEATURES, PACKAGE_VERSION
+from .constants import (
+    CONTEXT_RADIUS,
+    FEATURE_FAMILY_BY_NAME,
+    FEATURE_ORDER,
+    LEXICAL_FEATURES,
+    PACKAGE_VERSION,
+)
 from .context import build_contextual_vectors, contextual_feature_refs
 from .diversity import compute_diversity
 from .features import load_or_create_annotated_tokens
@@ -27,6 +33,8 @@ _DEPRECATED_OUTPUTS = (
     "contextual_feature_scores_r2.parquet",
 )
 
+_POSITION_ORDER = {"TARGET": 0, "L2": 1, "L1": 2, "R1": 3, "R2": 4}
+
 
 def _lexical_refs() -> list[FeatureRef]:
     return [FeatureRef(name=feature.name, column=feature.column) for feature in LEXICAL_FEATURES]
@@ -44,6 +52,61 @@ def _rename_coherence(summary: pd.DataFrame, prefix: str) -> pd.DataFrame:
             "winning_corpus_coverage": f"{prefix}_corpus_coverage",
         }
     )
+
+
+def _long_feature_scores(
+    lexical_details: pd.DataFrame,
+    contextual_details: pd.DataFrame,
+) -> pd.DataFrame:
+    """Combine lexical/contextual modal-coherence detail into one public table."""
+
+    lexical = lexical_details.copy()
+    lexical.insert(1, "domain", "lexical")
+    lexical.insert(2, "position", "TARGET")
+
+    contextual = contextual_details.copy()
+    if not contextual.empty:
+        split = contextual["feature"].astype(str).str.split(".", n=1, expand=True)
+        if split.shape[1] != 2:
+            raise ValueError("Contextual feature names must have the form POSITION.Feature")
+        contextual["position"] = split[0]
+        contextual["feature"] = split[1]
+        contextual.insert(1, "domain", "contextual")
+        position = contextual.pop("position")
+        contextual.insert(2, "position", position)
+
+    details = pd.concat([lexical, contextual], ignore_index=True)
+    details["feature_family"] = details["feature"].map(FEATURE_FAMILY_BY_NAME)
+    if details["feature_family"].isna().any():
+        unknown = sorted(details.loc[details["feature_family"].isna(), "feature"].unique())
+        raise ValueError(f"Missing feature-family metadata for features: {unknown}")
+
+    details = details.rename(columns={"normalized_score": "normalized_coherence"})
+    wanted = [
+        "category",
+        "domain",
+        "position",
+        "feature",
+        "feature_family",
+        "feature_column",
+        "category_token_count",
+        "non_null_count",
+        "modal_value",
+        "modal_count",
+        "modal_coverage",
+        "corpus_count",
+        "corpus_token_count",
+        "corpus_coverage",
+        "normalized_coherence",
+    ]
+    details = details[wanted]
+    details["_position_order"] = details["position"].map(_POSITION_ORDER)
+    details["_feature_order"] = details["feature"].map(FEATURE_ORDER)
+    details = details.sort_values(
+        ["category", "_position_order", "_feature_order"],
+        kind="stable",
+    ).drop(columns=["_position_order", "_feature_order"])
+    return details.reset_index(drop=True)
 
 
 def _remove_deprecated_outputs(output_dir: Path) -> None:
@@ -89,7 +152,7 @@ def run_pipeline(
     diversity = compute_diversity(annotated, contexts, show_progress=show_progress)
 
     # Existing lexical and contextual coherence metrics.
-    lexical_summary, _ = score_modal_coherence(
+    lexical_summary, lexical_details = score_modal_coherence(
         annotated,
         category_column="category",
         features=_lexical_refs(),
@@ -98,7 +161,7 @@ def run_pipeline(
     )
     lexical_summary = _rename_coherence(lexical_summary, "LC")
 
-    contextual_summary, _ = score_modal_coherence(
+    contextual_summary, contextual_details = score_modal_coherence(
         contexts,
         category_column="category",
         features=contextual_feature_refs(),
@@ -107,9 +170,12 @@ def run_pipeline(
     )
     contextual_summary = _rename_coherence(contextual_summary, "CC2")
 
+    feature_scores = _long_feature_scores(lexical_details, contextual_details)
+    write_csv(feature_scores, output_dir / "category_feature_scores.csv")
+
     # Long-format source of truth for all lexical and r=2 contextual feature
     # distributions. Keep full floating-point precision here for downstream
-    # Hellinger/clustering/PCA analyses.
+    # Hellinger/clustering/projection analyses.
     distributions = build_category_feature_distributions(
         annotated,
         contexts,
@@ -135,6 +201,7 @@ def run_pipeline(
         "context_radius_for_coherence": CONTEXT_RADIUS,
         "public_outputs": [
             "category_feature_distributions.csv",
+            "category_feature_scores.csv",
             "category_metrics.csv",
         ],
         "cache_outputs": [
@@ -142,15 +209,27 @@ def run_pipeline(
             "annotated_tokens.meta.json",
         ],
         "lexical_features": [
-            {"name": feature.name, "column": feature.column, "source": feature.source}
+            {
+                "name": feature.name,
+                "column": feature.column,
+                "source": feature.source,
+                "family": feature.family,
+            }
             for feature in LEXICAL_FEATURES
         ],
         "feature_distribution_schema": {
             "position": "TARGET for lexical features; L2/L1/R1/R2 for contextual features",
+            "feature_family": "grammatical or semantic; orthogonal to lexical/contextual position",
             "proportion": "count divided by all tokens in the category",
             "null_handling": "Genuine missing feature values are emitted as literal NULL.",
             "boundary_handling": "Out-of-sentence contextual slots are <BOS>/<EOS>.",
             "unobserved_values": "Omitted; downstream matrix construction should fill them with zero.",
+        },
+        "feature_score_schema": {
+            "modal_value": "most common non-NULL value for the category/feature block",
+            "modal_coverage": "modal count divided by all category tokens, including NULLs",
+            "corpus_coverage": "coverage of that same modal value in the full corpus",
+            "normalized_coherence": "max(0, (modal_coverage - corpus_coverage) / (1 - corpus_coverage))",
         },
         "wordnet_semantics": {
             "noun_and_verb_classes": "WordNet lexname/supersense of a contextual Lesk-selected sense",
@@ -169,4 +248,5 @@ def run_pipeline(
         "cache_hit": cache_hit,
         "category_metrics": category_metrics,
         "category_feature_distributions": distributions,
+        "category_feature_scores": feature_scores,
     }
