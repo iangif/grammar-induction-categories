@@ -7,7 +7,13 @@ from typing import Iterable
 import pandas as pd
 from tqdm.auto import tqdm
 
-from .constants import CONTEXT_POSITIONS, LEXICAL_FEATURES, NULL_VALUE
+from .constants import (
+    BOUNDARY_FEATURE_NAME,
+    CONTEXT_POSITIONS,
+    FEATURE_FAMILY_BY_NAME,
+    LEXICAL_FEATURES,
+    NULL_VALUE,
+)
 
 
 def _distribution_rows(
@@ -60,9 +66,10 @@ def build_category_feature_distributions(
     Each row represents one observed value of one feature block. ``proportion``
     is always ``count / category_token_count``; therefore genuine missing lexical
     annotations are emitted as the explicit value ``NULL`` and remain part of
-    the probability distribution. Context boundary values remain ``<BOS>`` and
-    ``<EOS>``. Unobserved values are omitted and can be filled with zero when a
-    downstream analysis pivots this table to a matrix.
+    the probability distribution. For contextual slots outside the sentence,
+    ordinary linguistic features are NULL and a dedicated ``Boundary`` feature
+    records ``<BOS>``/``<EOS>`` once. Unobserved values are omitted and can be
+    filled with zero when a downstream analysis pivots this table to a matrix.
     """
 
     if "category" not in annotated_tokens.columns:
@@ -81,6 +88,9 @@ def build_category_feature_distributions(
         for position, _ in CONTEXT_POSITIONS
         for feature in LEXICAL_FEATURES
     ]
+    contextual_columns.extend(
+        f"{position}.{BOUNDARY_FEATURE_NAME}" for position, _ in CONTEXT_POSITIONS
+    )
     contextual_missing = [
         column for column in contextual_columns if column not in contextual_vectors.columns
     ]
@@ -107,6 +117,16 @@ def build_category_feature_distributions(
                     feature.family,
                 )
             )
+        blocks.append(
+            (
+                contextual_vectors,
+                f"{position}.{BOUNDARY_FEATURE_NAME}",
+                "contextual",
+                position,
+                BOUNDARY_FEATURE_NAME,
+                FEATURE_FAMILY_BY_NAME[BOUNDARY_FEATURE_NAME],
+            )
+        )
 
     rows: list[pd.DataFrame] = []
     progress: Iterable[tuple[pd.DataFrame, str, str, str, str, str]] = tqdm(

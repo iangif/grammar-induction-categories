@@ -6,7 +6,13 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from .coherence import FeatureRef
-from .constants import BOS, EOS, CONTEXT_POSITIONS, LEXICAL_FEATURES
+from .constants import (
+    BOS,
+    EOS,
+    BOUNDARY_FEATURE_NAME,
+    CONTEXT_POSITIONS,
+    LEXICAL_FEATURES,
+)
 
 def contextual_feature_refs() -> list[FeatureRef]:
     refs: list[FeatureRef] = []
@@ -14,6 +20,8 @@ def contextual_feature_refs() -> list[FeatureRef]:
         for feature in LEXICAL_FEATURES:
             name = f"{position}.{feature.name}"
             refs.append(FeatureRef(name=name, column=name))
+        boundary = f"{position}.{BOUNDARY_FEATURE_NAME}"
+        refs.append(FeatureRef(name=boundary, column=boundary))
     return refs
 
 
@@ -28,9 +36,13 @@ def build_contextual_vectors(
     are therefore built with four vectorized within-sentence shifts rather than
     a Python loop over sentences/tokens.
 
-    Boundary positions are explicit: every feature at an out-of-sentence slot is
-    assigned <BOS> or <EOS>. A real neighboring token whose lexical feature is
-    NULL remains NULL; only genuinely absent neighbors receive boundary symbols.
+    Boundary positions are represented once by a sparse dedicated ``Boundary``
+    feature: actual boundaries are <BOS>/<EOS>, while ordinary in-sentence positions
+    are missing and therefore become NULL downstream. The contextual word column
+    keeps <BOS>/<EOS> for contextual-diversity frames. Ordinary linguistic features
+    are missing at out-of-sentence slots and likewise become NULL in downstream
+    feature distributions. A real neighbor whose lexical feature is missing remains
+    missing in exactly the same way.
     """
 
     source = tokens.reset_index(drop=True).copy()
@@ -73,12 +85,23 @@ def build_contextual_vectors(
             boundary_mask = ~neighbor_exists
             boundary = BOS if offset < 0 else EOS
             if boundary_mask.any():
-                shifted.loc[boundary_mask, :] = boundary
+                # Keep explicit BOS/EOS only for contextual word identity. The
+                # ordinary linguistic feature columns stay missing so downstream
+                # distribution/coherence code treats them as NULL once, rather
+                # than repeating the boundary symbol across every feature.
+                shifted.loc[boundary_mask, "word"] = boundary
+
+            # Boundary is a sparse event feature: only actual BOS/EOS events
+            # receive a value. In-sentence positions stay missing so they become
+            # NULL in distributions and cannot win modal coherence.
+            boundary_values = pd.Series(pd.NA, index=shifted.index, dtype="string")
+            boundary_values.loc[boundary_mask] = boundary
 
             shifted.columns = [
                 f"{position}.word",
                 *(f"{position}.{feature.name}" for feature in LEXICAL_FEATURES),
             ]
+            shifted[f"{position}.{BOUNDARY_FEATURE_NAME}"] = boundary_values
             context_blocks.append(shifted)
             progress.update(1)
     finally:

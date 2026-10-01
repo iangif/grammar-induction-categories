@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
-from .constants import POSITION_RANK
 from .io import HellingerSpaceError
 from .transform import HellingerSpace
 
@@ -14,11 +12,12 @@ def score_space_coherence(
     space: HellingerSpace,
     feature_scores: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Weighted mean coherence over exactly the blocks in ``space``.
+    """Coherence over exactly the feature blocks in ``space``.
 
-    This uses the same normalized block weights as the Hellinger geometry, so
-    the color/summary shown for a space refers to the linguistic information
-    that actually determines point positions in that space.
+    Per-feature ``normalized_coverage`` is the corpus-normalized modal coverage
+    from the abstraction framework. Category-level coherence is the maximum of
+    that quantity over all active feature blocks, matching the original lexical
+    and contextual coherence definitions.
     """
 
     required = {
@@ -26,15 +25,14 @@ def score_space_coherence(
         "domain",
         "position",
         "feature",
-        "normalized_coherence",
+        "normalized_coverage",
     }
     missing = sorted(required - set(feature_scores.columns))
     if missing:
         raise HellingerSpaceError(f"Feature scores missing columns: {missing}")
 
-    blocks = space.block_weights[
-        ["domain", "position", "feature", "feature_family", "block_weight"]
-    ].copy()
+    blocks = space.block_weights[["domain", "position", "feature", "feature_family"]].copy()
+    blocks["_block_rank"] = np.arange(len(blocks), dtype=int)
     scores = feature_scores.merge(
         blocks,
         on=["domain", "position", "feature", "feature_family"],
@@ -50,15 +48,39 @@ def score_space_coherence(
             f"expected {expected} category/block rows, got {len(actual_blocks)}."
         )
 
-    scores["weighted_coherence"] = scores["normalized_coherence"] * scores["block_weight"]
-    summary = (
-        scores.groupby("category", sort=False, dropna=False)["weighted_coherence"]
-        .sum()
-        .rename("space_coherence")
-        .reset_index()
+    sort_columns = [
+        "category",
+        "normalized_coverage",
+        "modal_coverage",
+    ]
+    ascending = [True, False, False]
+    if "modal_count" in scores.columns:
+        sort_columns.append("modal_count")
+        ascending.append(False)
+    sort_columns.append("_block_rank")
+    ascending.append(True)
+    ranked = scores.sort_values(sort_columns, ascending=ascending, kind="stable")
+    winners = ranked.groupby("category", sort=False, dropna=False).head(1).copy()
+    winners = winners.rename(
+        columns={
+            "normalized_coverage": "space_coherence",
+            "position": "coherence_position",
+            "feature": "coherence_feature",
+            "modal_value": "coherence_value",
+            "modal_coverage": "coherence_modal_coverage",
+            "corpus_coverage": "coherence_corpus_coverage",
+        }
     )
-    summary["space_coherence"] = summary["space_coherence"].clip(0.0, 1.0)
-    return summary
+    columns = [
+        "category",
+        "space_coherence",
+        "coherence_position",
+        "coherence_feature",
+        "coherence_value",
+        "coherence_modal_coverage",
+        "coherence_corpus_coverage",
+    ]
+    return winners[columns].reset_index(drop=True)
 
 
 def active_feature_scores(space: HellingerSpace, feature_scores: pd.DataFrame) -> pd.DataFrame:
@@ -67,22 +89,22 @@ def active_feature_scores(space: HellingerSpace, feature_scores: pd.DataFrame) -
     blocks = space.block_weights[
         ["domain", "position", "feature", "feature_family", "block_weight"]
     ].copy()
+    blocks["_block_rank"] = np.arange(len(blocks), dtype=int)
     active = feature_scores.merge(
         blocks,
         on=["domain", "position", "feature", "feature_family"],
         how="inner",
         validate="many_to_one",
     )
-    active["_position_rank"] = active["position"].map(POSITION_RANK)
-    sort_columns = ["category", "normalized_coherence", "modal_coverage"]
+    sort_columns = ["category", "normalized_coverage", "modal_coverage"]
     ascending = [True, False, False]
     if "modal_count" in active.columns:
         sort_columns.append("modal_count")
         ascending.append(False)
-    sort_columns.extend(["_position_rank", "feature"])
-    ascending.extend([True, True])
+    sort_columns.append("_block_rank")
+    ascending.append(True)
     active = active.sort_values(sort_columns, ascending=ascending, kind="stable")
-    return active.drop(columns="_position_rank").reset_index(drop=True)
+    return active.drop(columns="_block_rank").reset_index(drop=True)
 
 
 def merge_category_visual_metrics(
@@ -90,10 +112,10 @@ def merge_category_visual_metrics(
     category_metrics: pd.DataFrame,
     feature_scores: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Join LD_eff and same-space coherence for visualization."""
+    """Join diversity measures and same-space coherence for visualization."""
 
     coherence = score_space_coherence(space, feature_scores)
-    metrics = category_metrics[["category", "LD_eff"]].merge(
+    metrics = category_metrics[["category", "LD_eff", "CD1_eff"]].merge(
         coherence,
         on="category",
         how="inner",

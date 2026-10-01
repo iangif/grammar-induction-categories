@@ -108,7 +108,6 @@ def _record(value: Any) -> Any:
 
 def _category_detail_payload(
     active_scores: pd.DataFrame,
-    metrics: pd.DataFrame,
     *,
     top_k: int,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
@@ -125,7 +124,7 @@ def _category_detail_payload(
                     "modal_value": _record(row.modal_value),
                     "modal_coverage": float(row.modal_coverage),
                     "corpus_coverage": _record(row.corpus_coverage),
-                    "coherence": float(row.normalized_coherence),
+                    "normalized_coverage": float(row.normalized_coverage),
                     "block_weight": float(row.block_weight),
                 }
             )
@@ -221,6 +220,10 @@ th {{ position: sticky; top: 0; background: white; }}
 <div class="controls">
   <label>Feature space <select id="space-select"></select></label>
   <label>Projection <select id="projection-select"></select></label>
+  <label>Size by <select id="size-select">
+    <option value="LD_eff">Lexical diversity</option>
+    <option value="CD1_eff">Contextual diversity (r=1)</option>
+  </select></label>
   <label><input id="labels-toggle" type="checkbox"> Show category labels</label>
 </div>
 <div id="plot"></div>
@@ -241,6 +244,7 @@ const DATA = JSON.parse(document.getElementById('payload').textContent);
 const plot = document.getElementById('plot');
 const spaceSelect = document.getElementById('space-select');
 const projectionSelect = document.getElementById('projection-select');
+const sizeSelect = document.getElementById('size-select');
 const labelsToggle = document.getElementById('labels-toggle');
 
 function escapeHtml(x) {{
@@ -280,13 +284,13 @@ function renderDetails(category) {{
   const space = spaceSelect.value;
   const summary = DATA.category_metrics[String(category)];
   const rows = DATA.details[space][String(category)] || [];
-  let header = `<b>Category ${{escapeHtml(category)}}</b> &nbsp; LD_eff: <b>${{num(summary.LD_eff)}}</b> &nbsp; ${{escapeHtml(DATA.space_labels[space])}} coherence: <b>${{num(summary.space_coherence_by_space[space])}}</b>`;
+  let header = `<b>Category ${{escapeHtml(category)}}</b> &nbsp; LD_eff: <b>${{num(summary.LD_eff)}}</b> &nbsp; CD1_eff: <b>${{num(summary.CD1_eff)}}</b> &nbsp; ${{escapeHtml(DATA.space_labels[space])}} coherence: <b>${{num(summary.space_coherence_by_space[space])}}</b>`;
   if (summary.LC !== null && summary.LC !== undefined) header += ` &nbsp; LC: <b>${{num(summary.LC)}}</b>`;
   if (summary.CC2 !== null && summary.CC2 !== undefined) header += ` &nbsp; CC2: <b>${{num(summary.CC2)}}</b>`;
   document.getElementById('category-summary').innerHTML = header;
-  let table = '<table><thead><tr><th>Position</th><th>Feature</th><th>Modal value</th><th>Coverage</th><th>Corpus</th><th>Coherence</th></tr></thead><tbody>';
+  let table = '<table><thead><tr><th>Position</th><th>Feature</th><th>Modal value</th><th>Coverage</th><th>Corpus coverage</th><th>Normalized coverage</th></tr></thead><tbody>';
   for (const r of rows) {{
-    table += `<tr><td>${{escapeHtml(r.position)}}</td><td>${{escapeHtml(r.feature)}}</td><td>${{escapeHtml(r.modal_value ?? 'NULL')}}</td><td>${{num(r.modal_coverage)}}</td><td>${{num(r.corpus_coverage)}}</td><td>${{num(r.coherence)}}</td></tr>`;
+    table += `<tr><td>${{escapeHtml(r.position)}}</td><td>${{escapeHtml(r.feature)}}</td><td>${{escapeHtml(r.modal_value ?? 'NULL')}}</td><td>${{num(r.modal_coverage)}}</td><td>${{num(r.corpus_coverage)}}</td><td>${{num(r.normalized_coverage)}}</td></tr>`;
   }}
   table += '</tbody></table>';
   document.getElementById('detail-table-wrap').innerHTML = table;
@@ -296,6 +300,8 @@ function render() {{
   const space = spaceSelect.value;
   const projection = projectionSelect.value;
   const view = DATA.views[space][projection];
+  const sizeMetric = sizeSelect.value;
+  const sizes = sizeMetric === 'CD1_eff' ? view.cd1_eff : view.ld_eff;
   const mode = labelsToggle.checked ? 'markers+text' : 'markers';
   const trace = {{
     type: 'scatter', mode,
@@ -304,7 +310,7 @@ function render() {{
     customdata: view.categories,
     hovertext: view.hovertext, hoverinfo: 'text',
     marker: {{
-      size: view.ld_eff, sizemode: 'area', sizeref: DATA.sizeref, sizemin: 5,
+      size: sizes, sizemode: 'area', sizeref: DATA.sizeref[sizeMetric], sizemin: 5,
       color: view.coherence, cmin: 0, cmax: 1, colorscale: 'Viridis',
       colorbar: {{title: 'Coherence'}}, line: {{width: 0.5, color: '#555'}}
     }}
@@ -323,6 +329,7 @@ render();
 plot.on('plotly_click', ev => {{ if (ev.points && ev.points.length) renderDetails(ev.points[0].customdata); }});
 spaceSelect.addEventListener('change', () => {{ render(); document.getElementById('detail-table-wrap').innerHTML=''; document.getElementById('category-summary').textContent='Click a point to inspect all active features.'; }});
 projectionSelect.addEventListener('change', render);
+sizeSelect.addEventListener('change', render);
 labelsToggle.addEventListener('change', render);
 </script>
 </body>
@@ -380,7 +387,11 @@ def build_interactive_visualization(
     all_space_coherence: dict[str, dict[str, float]] = {}
 
     max_ld = float(category_metrics["LD_eff"].max())
-    payload["sizeref"] = 2.0 * max(max_ld, 1.0) / (42.0**2)
+    max_cd1 = float(category_metrics["CD1_eff"].max())
+    payload["sizeref"] = {
+        "LD_eff": 2.0 * max(max_ld, 1.0) / (42.0**2),
+        "CD1_eff": 2.0 * max(max_cd1, 1.0) / (42.0**2),
+    }
 
     for space_name in space_names:
         space = build_hellinger_space(
@@ -390,7 +401,7 @@ def build_interactive_visualization(
         )
         visual_metrics = merge_category_visual_metrics(space, category_metrics, feature_scores)
         active_scores = active_feature_scores(space, feature_scores)
-        details, hover_rows = _category_detail_payload(active_scores, visual_metrics, top_k=top_k)
+        details, hover_rows = _category_detail_payload(active_scores, top_k=top_k)
         payload["details"][space_name] = details
         payload["views"][space_name] = {}
         all_space_coherence[space_name] = {
@@ -441,6 +452,7 @@ def build_interactive_visualization(
                 lines = [
                     f"<b>Category {category}</b>",
                     f"LD_eff: {float(row.LD_eff):.2f}",
+                    f"CD1_eff: {float(row.CD1_eff):.2f}",
                     f"{space_name} coherence: {float(row.space_coherence):.3f}",
                     "<br><b>Top features</b>",
                 ]
@@ -449,8 +461,8 @@ def build_interactive_visualization(
                     corpus_text = "—" if corpus is None else f"{float(corpus):.3f}"
                     lines.append(
                         f"{item['position']} · {item['feature']} = {item['modal_value'] if item['modal_value'] not in (None, '') else 'NULL'} "
-                        f"| coh {item['coherence']:.3f} | cov {item['modal_coverage']:.3f} "
-                        f"| corpus {corpus_text}"
+                        f"| normalized coverage {item['normalized_coverage']:.3f} "
+                        f"| coverage {item['modal_coverage']:.3f} | corpus coverage {corpus_text}"
                     )
                 hover_text.append("<br>".join(lines))
 
@@ -460,6 +472,7 @@ def build_interactive_visualization(
                 "x": merged[x_col].astype(float).tolist(),
                 "y": merged[y_col].astype(float).tolist(),
                 "ld_eff": merged["LD_eff"].astype(float).tolist(),
+                "cd1_eff": merged["CD1_eff"].astype(float).tolist(),
                 "coherence": merged["space_coherence"].astype(float).tolist(),
                 "hovertext": hover_text,
                 "x_label": x_label,
@@ -503,6 +516,7 @@ def build_interactive_visualization(
         key = str(row.category)
         entry: dict[str, Any] = {
             "LD_eff": float(row.LD_eff),
+            "CD1_eff": float(row.CD1_eff),
             "space_coherence_by_space": {
                 space: all_space_coherence[space][key] for space in space_names
             },

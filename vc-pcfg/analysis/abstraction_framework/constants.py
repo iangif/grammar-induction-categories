@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-PACKAGE_VERSION = "0.3.0"
+PACKAGE_VERSION = "0.4.1"
 FEATURE_SCHEMA_VERSION = "3"
 CACHE_SCHEMA_VERSION = "2"
 
@@ -15,7 +15,14 @@ CONTEXT_RADIUS = 2  # For contextual coherence.
 
 GRAMMATICAL_FAMILY = "grammatical"
 SEMANTIC_FAMILY = "semantic"
-FEATURE_FAMILIES: tuple[str, ...] = (GRAMMATICAL_FAMILY, SEMANTIC_FAMILY)
+STRUCTURAL_FAMILY = "structural"
+FEATURE_FAMILIES: tuple[str, ...] = (
+    GRAMMATICAL_FAMILY,
+    SEMANTIC_FAMILY,
+    STRUCTURAL_FAMILY,
+)
+
+BOUNDARY_FEATURE_NAME = "Boundary"
 
 
 @dataclass(frozen=True)
@@ -127,7 +134,9 @@ LEXICAL_FEATURES: tuple[LexicalFeature, ...] = (
 )
 
 FEATURE_FAMILY_BY_NAME = {feature.name: feature.family for feature in LEXICAL_FEATURES}
+FEATURE_FAMILY_BY_NAME[BOUNDARY_FEATURE_NAME] = STRUCTURAL_FAMILY
 FEATURE_ORDER = {feature.name: index for index, feature in enumerate(LEXICAL_FEATURES)}
+FEATURE_ORDER[BOUNDARY_FEATURE_NAME] = len(LEXICAL_FEATURES)
 
 CONTEXT_POSITIONS: tuple[tuple[str, int], ...] = (
     ("L2", -2),

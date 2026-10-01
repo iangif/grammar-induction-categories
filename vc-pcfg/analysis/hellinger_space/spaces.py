@@ -60,6 +60,15 @@ def filter_feature_space(frame: pd.DataFrame, feature_space: str) -> pd.DataFram
         selected = frame.loc[frame["position"].eq("TARGET")]
     elif feature_space == "contextual":
         selected = frame.loc[~frame["position"].eq("TARGET")]
+    elif feature_space == "grammatical":
+        if "feature_family" not in frame.columns:
+            raise HellingerSpaceError(
+                f"Feature space {feature_space!r} requires a feature_family column."
+            )
+        # Sentence-boundary structure is syntactic/structural information, so
+        # include it in the grammatical view while keeping a distinct family
+        # label in the source metadata.
+        selected = frame.loc[frame["feature_family"].isin({"grammatical", "structural"})]
     else:
         if "feature_family" not in frame.columns:
             raise HellingerSpaceError(

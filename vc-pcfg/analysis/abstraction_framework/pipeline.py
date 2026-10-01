@@ -81,7 +81,7 @@ def _long_feature_scores(
         unknown = sorted(details.loc[details["feature_family"].isna(), "feature"].unique())
         raise ValueError(f"Missing feature-family metadata for features: {unknown}")
 
-    details = details.rename(columns={"normalized_score": "normalized_coherence"})
+    details = details.rename(columns={"normalized_score": "normalized_coverage"})
     wanted = [
         "category",
         "domain",
@@ -97,7 +97,7 @@ def _long_feature_scores(
         "corpus_count",
         "corpus_token_count",
         "corpus_coverage",
-        "normalized_coherence",
+        "normalized_coverage",
     ]
     details = details[wanted]
     details["_position_order"] = details["position"].map(_POSITION_ORDER)
@@ -151,7 +151,8 @@ def run_pipeline(
     # Existing category-level diversity metrics.
     diversity = compute_diversity(annotated, contexts, show_progress=show_progress)
 
-    # Existing lexical and contextual coherence metrics.
+    # Existing lexical and contextual coherence metrics. The detailed rows are
+    # now retained as a public output for downstream interpretable projections.
     lexical_summary, lexical_details = score_modal_coherence(
         annotated,
         category_column="category",
@@ -219,17 +220,27 @@ def run_pipeline(
         ],
         "feature_distribution_schema": {
             "position": "TARGET for lexical features; L2/L1/R1/R2 for contextual features",
-            "feature_family": "grammatical or semantic; orthogonal to lexical/contextual position",
+            "feature_family": (
+                "grammatical, semantic, or structural; Boundary is structural and is included "
+                "in grammatical Hellinger-space analyses"
+            ),
             "proportion": "count divided by all tokens in the category",
-            "null_handling": "Genuine missing feature values are emitted as literal NULL.",
-            "boundary_handling": "Out-of-sentence contextual slots are <BOS>/<EOS>.",
+            "null_handling": (
+                "Missing/inapplicable values are emitted as literal NULL. Ordinary contextual "
+                "features are also NULL when the neighboring position lies outside the sentence."
+            ),
+            "boundary_handling": (
+                "BOS/EOS are represented once by a sparse contextual Boundary feature; "
+                "the Boundary value is NULL when no sentence boundary occurs. Context-word "
+                "columns retain <BOS>/<EOS> for CD1/CD2 frame calculations."
+            ),
             "unobserved_values": "Omitted; downstream matrix construction should fill them with zero.",
         },
         "feature_score_schema": {
             "modal_value": "most common non-NULL value for the category/feature block",
             "modal_coverage": "modal count divided by all category tokens, including NULLs",
             "corpus_coverage": "coverage of that same modal value in the full corpus",
-            "normalized_coherence": "max(0, (modal_coverage - corpus_coverage) / (1 - corpus_coverage))",
+            "normalized_coverage": "max(0, (modal_coverage - corpus_coverage) / (1 - corpus_coverage))",
         },
         "wordnet_semantics": {
             "noun_and_verb_classes": "WordNet lexname/supersense of a contextual Lesk-selected sense",

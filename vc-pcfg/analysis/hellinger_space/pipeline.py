@@ -139,8 +139,12 @@ def run_analysis(
                 "renormalized to sum to 1; each active group is split equally across its blocks."
             ),
             "space_coherence": (
-                "Weighted mean of per-block normalized coherence using the exact normalized "
-                "block weights of the displayed Hellinger space."
+                "Maximum per-block normalized coverage over exactly the feature blocks in "
+                "the displayed space, matching the abstraction framework's LC/CC definition."
+            ),
+            "point_size": (
+                "Interactive toggle between effective lexical diversity (LD_eff) and "
+                "effective contextual diversity at radius 1 (CD1_eff)."
             ),
             "outputs": outputs,
         }

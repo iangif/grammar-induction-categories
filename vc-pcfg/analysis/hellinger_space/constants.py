@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-PACKAGE_VERSION = "0.2.0"
+PACKAGE_VERSION = "0.3.0"
 
 REQUIRED_COLUMNS: tuple[str, ...] = (
     "category",
@@ -60,6 +60,7 @@ GRAMMATICAL_FEATURES = {
     "Determiner type",
     "Conjunction type",
 }
+STRUCTURAL_FEATURES = {"Boundary"}
 SEMANTIC_FEATURES = {
     "Animacy",
     "Humanness",
@@ -72,6 +73,7 @@ SEMANTIC_FEATURES = {
 FEATURE_FAMILY_BY_NAME = {
     **{name: "grammatical" for name in GRAMMATICAL_FEATURES},
     **{name: "semantic" for name in SEMANTIC_FEATURES},
+    **{name: "structural" for name in STRUCTURAL_FEATURES},
 }
 
 BLOCK_SUM_ATOL = 1e-8
